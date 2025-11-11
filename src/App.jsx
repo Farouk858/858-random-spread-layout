@@ -4,13 +4,9 @@ import JSZip from "jszip";
 /**
  * 858 Random Spread Layout — Pure React
  * Now includes:
- * - Default 1080 × 1320 portrait
- * - Presets
- * - Editorial layouts (spaced / seamless) + Shuffle
- * - Background rectangles across all boards (toggle + regenerate; included in export)
- * - Responsive preview (fits height and width)
- * - First page forced 3-up: top hero wide, bottom two edge-to-edge
- * - Previous features preserved: drag, resize, z-order, scatter, overlay, exports
+ * - Rectangle layer controls (colour pickers, opacity, size %, density)
+ * - Preview zoom so the canvas shows bigger
+ * - All previous features kept
  */
 
 const MAX_BOARDS = 20;
@@ -38,9 +34,9 @@ function rectsOverlapWithMargin(a, b, m) {
   );
 }
 
-// map node-local visible rect to source crop for COVER fit
+// cover-fit crop mapping
 function coverSourceRect(imgW, imgH, nodeW, nodeH, nx, ny, nw, nh) {
-  const scale = Math.max(nodeW / imgW, nodeH / imgH); // cover
+  const scale = Math.max(nodeW / imgW, nodeH / imgH);
   const rw = imgW * scale;
   const rh = imgH * scale;
   const offsetX = (rw - nodeW) / 2;
@@ -199,6 +195,7 @@ export default function App() {
   // layout + preview
   const [spacing, setSpacing] = useState(24);
   const [previewScale, setPreviewScale] = useState(1);
+  const [zoom, setZoom] = useState(1.4); // 50%–200% multiplier of auto-fit (clamped to 1 later)
   const wrapperRef = useRef(null);
 
   // items
@@ -217,6 +214,18 @@ export default function App() {
   const [showRects, setShowRects] = useState(false);
   const [rects, setRects] = useState([]); // {x,y,w,h, color, opacity}
 
+  // rect controls
+  const [rectCols, setRectCols] = useState(6);
+  const [rectRows, setRectRows] = useState(5);
+  const [rectMinWpc, setRectMinWpc] = useState(6);  // % of boardW
+  const [rectMaxWpc, setRectMaxWpc] = useState(22);
+  const [rectMinHpc, setRectMinHpc] = useState(4);  // % of boardH
+  const [rectMaxHpc, setRectMaxHpc] = useState(18);
+  const [rectOpacityMin, setRectOpacityMin] = useState(6);  // %
+  const [rectOpacityMax, setRectOpacityMax] = useState(14); // %
+  const [rectColorA, setRectColorA] = useState("#0f172a");
+  const [rectColorB, setRectColorB] = useState("#111827");
+
   // editorial state
   const [lastEditorialTight, setLastEditorialTight] = useState(false);
 
@@ -232,17 +241,18 @@ export default function App() {
     { label: "1350 × 1080 (IG)", w: 1350, h: 1080 },
   ];
 
-  // responsive fit (height and width)
+  // responsive fit (height and width) + zoom
   const fitPreview = useCallback(() => {
     const el = wrapperRef.current;
     if (!el) return;
-    const availW = el.clientWidth - 2; // borders
+    const availW = el.clientWidth - 2;
     const availH = window.innerHeight - el.getBoundingClientRect().top - 16;
     const scaleW = availW / SPREAD_W;
     const scaleH = availH / SPREAD_H;
-    const scale = Math.min(1, scaleW, scaleH);
-    setPreviewScale(scale > 0 && isFinite(scale) ? scale : 1);
-  }, [SPREAD_W, SPREAD_H]);
+    const base = Math.min(scaleW, scaleH);
+    const scaled = clamp(base * clamp(zoom, 0.5, 2), 0.05, 1); // never exceed 1 to prevent blur
+    setPreviewScale(scaled > 0 && isFinite(scaled) ? scaled : 1);
+  }, [SPREAD_W, SPREAD_H, zoom]);
 
   useEffect(() => {
     fitPreview();
@@ -250,9 +260,7 @@ export default function App() {
     return () => window.removeEventListener("resize", fitPreview);
   }, [fitPreview]);
 
-  useEffect(() => {
-    fitPreview();
-  }, [boardW, boardH, boards, fitPreview]);
+  useEffect(() => { fitPreview(); }, [boardW, boardH, boards, zoom, fitPreview]);
 
   // add images
   const onDropFiles = useCallback(async (fileList) => {
@@ -288,7 +296,7 @@ export default function App() {
     );
   }, [boardW, SPREAD_W]);
 
-  // simple random positions (kept from before)
+  // simple random positions
   const randomise = useCallback(() => {
     const placed = [];
     const tryPlace = (node) => {
@@ -308,7 +316,7 @@ export default function App() {
     setItems((prev) => prev.map(tryPlace));
   }, [SPREAD_W, SPREAD_H, spacing, boardW]);
 
-  // pack helpers from before
+  // pack helpers
   const packTop = useCallback(() => {
     const sorted = [...items].sort((a, b) => b.w * b.h - a.w * a.h);
     const placed = [];
@@ -392,37 +400,29 @@ export default function App() {
   };
 
   // ---------- EDITORIAL LAYOUTS ----------
-  // first page (board 0): 3-up (hero + 2 bottom edge-to-edge)
   function applyFirstPageThreeUp(arr, tight) {
     if (arr.length < 1) return arr;
     const s = [...arr];
 
-    // we need at least 3; if fewer, just stretch what we have
     const hero = s[0];
     const b1 = s[1] || null;
     const b2 = s[2] || null;
 
     const m = tight ? 0 : spacing;
-    const heroH = Math.round(boardH * 0.56); // hero height
+    const heroH = Math.round(boardH * 0.56);
     const bottomH = boardH - heroH - (tight ? 0 : m);
-    const leftW = b2 ? Math.floor((boardW - (tight ? 0 : m)) / 2) : boardW; // single bottom fills width if only b1
+    const leftW = b2 ? Math.floor((boardW - (tight ? 0 : m)) / 2) : boardW;
 
-    // hero full bleed
     s[0] = { ...hero, x: 0, y: 0, w: boardW, h: heroH };
-
-    if (b1) {
-      s[1] = { ...b1, x: 0, y: heroH + (tight ? 0 : m), w: leftW, h: bottomH };
-    }
+    if (b1) s[1] = { ...b1, x: 0, y: heroH + (tight ? 0 : m), w: leftW, h: bottomH };
     if (b2) {
       const x2 = leftW + (tight ? 0 : m);
       const w2 = boardW - x2;
       s[2] = { ...b2, x: x2, y: heroH + (tight ? 0 : m), w: w2, h: bottomH };
     }
-
     return s;
   }
 
-  // editorial rows across spread
   function applyEditorial(arr, tight) {
     const m = tight ? 0 : spacing;
     const s = [...arr];
@@ -430,35 +430,30 @@ export default function App() {
     let cursorY = 0;
     let rowH = 0;
 
-    // First board special rule:
     if (s.length >= 1) {
       s.splice(0, 3, ...applyFirstPageThreeUp(s.slice(0, 3), tight).slice(0, 3));
-      cursorX = boardW + (m ? m : 0); // continue after board 0
+      cursorX = boardW + (m ? m : 0);
       cursorY = 0;
       rowH = 0;
     }
 
     for (let i = 3; i < s.length; i++) {
       let n = s[i];
-      // set a consistent target height band for editorial feel
       const targetH = Math.max(220, Math.min(boardH * 0.55, n.h));
       const aspect = n.w / Math.max(1, n.h);
       let w = Math.max(160, Math.min(boardW * 0.55, Math.round(targetH * aspect)));
       let h = Math.round(targetH);
 
       if (cursorX + w > SPREAD_W) {
-        // hard wrap if somehow exceeded (safety)
         cursorX = 0;
         cursorY += rowH + m;
         rowH = 0;
       }
 
-      // wrap to next row if reaching end of the current board
       const currentBoardRight = Math.ceil((cursorX + 1) / boardW) * boardW;
       if (cursorX + w > currentBoardRight) {
         cursorX = currentBoardRight + (m ? m : 0);
       }
-      // new line if exceeding spread width
       if (cursorX + w > SPREAD_W) {
         cursorX = 0;
         cursorY += rowH + m;
@@ -469,14 +464,12 @@ export default function App() {
       cursorX += w + m;
       rowH = Math.max(rowH, h);
 
-      // new row if the next item would spill vertically
       if (cursorY + rowH > SPREAD_H) {
         cursorY = 0;
-        cursorX = (Math.floor(cursorX / boardW) + 1) * boardW; // next board
+        cursorX = (Math.floor(cursorX / boardW) + 1) * boardW;
         rowH = 0;
       }
     }
-
     return s;
   }
 
@@ -502,30 +495,35 @@ export default function App() {
   // ---------- BACKGROUND RECTS ----------
   const generateRects = useCallback(() => {
     const list = [];
-    const boardsCount = boards;
-    const cols = 6;
-    const rows = 5;
-    const minW = Math.floor(boardW * 0.06);
-    const maxW = Math.floor(boardW * 0.22);
-    const minH = Math.floor(boardH * 0.04);
-    const maxH = Math.floor(boardH * 0.18);
-    for (let b = 0; b < boardsCount; b++) {
+    const cols = Math.max(1, rectCols);
+    const rows = Math.max(1, rectRows);
+    const minW = Math.floor(boardW * (rectMinWpc / 100));
+    const maxW = Math.floor(boardW * (rectMaxWpc / 100));
+    const minH = Math.floor(boardH * (rectMinHpc / 100));
+    const maxH = Math.floor(boardH * (rectMaxHpc / 100));
+    const oMin = clamp(rectOpacityMin / 100, 0, 1);
+    const oMax = clamp(rectOpacityMax / 100, 0, 1);
+
+    for (let b = 0; b < boards; b++) {
       for (let i = 0; i < cols * rows; i++) {
-        const w = Math.floor(minW + Math.random() * (maxW - minW));
-        const h = Math.floor(minH + Math.random() * (maxH - minH));
+        const w = Math.floor(minW + Math.random() * Math.max(1, maxW - minW));
+        const h = Math.floor(minH + Math.random() * Math.max(1, maxH - minH));
         const x = b * boardW + Math.floor(Math.random() * Math.max(1, boardW - w));
         const y = Math.floor(Math.random() * Math.max(1, boardH - h));
-        const color = Math.random() < 0.5 ? "#0f172a" : "#111827"; // subtle darks
-        const opacity = 0.06 + Math.random() * 0.08;
+        const color = Math.random() < 0.5 ? rectColorA : rectColorB;
+        const opacity = oMin + Math.random() * Math.max(0, oMax - oMin);
         list.push({ x, y, w, h, color, opacity });
       }
     }
     setRects(list);
-  }, [boards, boardW, boardH]);
+  }, [
+    boards, boardW, boardH,
+    rectCols, rectRows,
+    rectMinWpc, rectMaxWpc, rectMinHpc, rectMaxHpc,
+    rectOpacityMin, rectOpacityMax, rectColorA, rectColorB
+  ]);
 
-  useEffect(() => {
-    if (showRects) generateRects();
-  }, [showRects, generateRects]);
+  useEffect(() => { if (showRects) generateRects(); }, [showRects, generateRects]);
 
   // export helpers
   const triggerDownload = (url, filename) => {
@@ -592,7 +590,6 @@ export default function App() {
           if (!n._img) continue;
           const inter = intersectRect(n.x, n.y, n.w, n.h, boardX, 0, boardW, boardH);
           if (!inter) continue;
-
           const nx = inter.x - n.x;
           const ny = inter.y - n.y;
           const nw = inter.w;
@@ -601,12 +598,7 @@ export default function App() {
           const { sx, sy, sw, sh } = coverSourceRect(
             n._img.naturalWidth,
             n._img.naturalHeight,
-            n.w,
-            n.h,
-            nx,
-            ny,
-            nw,
-            nh
+            n.w, n.h, nx, ny, nw, nh
           );
           if (sw <= 0 || sh <= 0) continue;
 
@@ -661,7 +653,6 @@ export default function App() {
   const applyPreset = (p) => {
     setBoardW(p.w);
     setBoardH(p.h);
-    // refit after size change
     setTimeout(() => {
       const el = wrapperRef.current;
       if (el) fitPreview();
@@ -673,20 +664,14 @@ export default function App() {
       className="app"
       style={{ display: "flex", flexDirection: "column", gap: 8, padding: 8 }}
       onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        onDropFiles(e.dataTransfer.files);
-      }}
+      onDrop={(e) => { e.preventDefault(); onDropFiles(e.dataTransfer.files); }}
     >
       {/* Toolbar */}
       <div className="toolbar" style={{ gap: 6, flexWrap: "wrap", display: "flex", alignItems: "center" }}>
         <strong>858 Random Spread Layout</strong>
 
         <span className="muted">Boards</span>
-        <select
-          value={boards}
-          onChange={(e) => setBoards(clamp(parseInt(e.target.value, 10), 1, MAX_BOARDS))}
-        >
+        <select value={boards} onChange={(e) => setBoards(clamp(parseInt(e.target.value, 10), 1, MAX_BOARDS))}>
           {Array.from({ length: MAX_BOARDS }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
@@ -694,9 +679,7 @@ export default function App() {
 
         <span className="muted">Preset</span>
         <select onChange={(e) => applyPreset(PRESETS[e.target.selectedIndex])}>
-          {PRESETS.map((p) => (
-            <option key={p.label}>{p.label}</option>
-          ))}
+          {PRESETS.map((p) => (<option key={p.label}>{p.label}</option>))}
         </select>
 
         <span className="muted">W</span>
@@ -741,6 +724,32 @@ export default function App() {
         <button onClick={() => setShowRects((s) => !s)}>{showRects ? "Hide Rects" : "Show Rects"}</button>
         <button onClick={generateRects} disabled={!showRects}>Regenerate</button>
 
+        {/* Rectangle controls */}
+        <span className="muted">Cols</span>
+        <input type="number" min={1} max={20} value={rectCols} onChange={(e) => setRectCols(clamp(parseInt(e.target.value||"1",10),1,20))} style={{ width: 60 }} />
+        <span className="muted">Rows</span>
+        <input type="number" min={1} max={20} value={rectRows} onChange={(e) => setRectRows(clamp(parseInt(e.target.value||"1",10),1,20))} style={{ width: 60 }} />
+
+        <span className="muted">W%</span>
+        <input type="number" min={1} max={100} value={rectMinWpc} onChange={(e)=>setRectMinWpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+        <span className="muted">→</span>
+        <input type="number" min={1} max={100} value={rectMaxWpc} onChange={(e)=>setRectMaxWpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+
+        <span className="muted">H%&nbsp;</span>
+        <input type="number" min={1} max={100} value={rectMinHpc} onChange={(e)=>setRectMinHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+        <span className="muted">→</span>
+        <input type="number" min={1} max={100} value={rectMaxHpc} onChange={(e)=>setRectMaxHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+
+        <span className="muted">Opacity</span>
+        <input type="number" min={0} max={100} value={rectOpacityMin} onChange={(e)=>setRectOpacityMin(clamp(parseInt(e.target.value||"0",10),0,100))} style={{ width: 55 }} />
+        <span className="muted">→</span>
+        <input type="number" min={0} max={100} value={rectOpacityMax} onChange={(e)=>setRectOpacityMax(clamp(parseInt(e.target.value||"0",10),0,100))} style={{ width: 55 }} />
+
+        <span className="muted">Colour A</span>
+        <input type="color" value={rectColorA} onChange={(e)=>setRectColorA(e.target.value)} />
+        <span className="muted">Colour B</span>
+        <input type="color" value={rectColorB} onChange={(e)=>setRectColorB(e.target.value)} />
+
         <strong style={{ marginLeft: 8 }}>Overlay</strong>
         <label>
           Upload
@@ -760,13 +769,24 @@ export default function App() {
           Add images
           <input type="file" multiple accept="image/*" style={{ marginLeft: 6 }} onChange={(e) => e.target.files && onDropFiles(e.target.files)} />
         </label>
+
+        <span style={{ marginLeft: 8 }} className="muted">Preview Zoom</span>
+        <input
+          type="range"
+          min={0.5} max={2} step={0.05}
+          value={zoom}
+          onChange={(e)=>setZoom(parseFloat(e.target.value))}
+          style={{ width: 140 }}
+          title="Scales the auto-fit preview size (capped at 1× to keep it sharp)"
+        />
       </div>
 
       {/* Spread preview (responsive) */}
-      <div ref={wrapperRef} className="spreadWrapper" style={{ border: "1px solid #e5e7eb", overflowX: "auto", overflowY: "hidden", width: "100%" }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) setSelectedId(null);
-        }}
+      <div
+        ref={wrapperRef}
+        className="spreadWrapper"
+        style={{ border: "1px solid #e5e7eb", overflowX: "auto", overflowY: "hidden", width: "100%" }}
+        onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}
       >
         <div
           style={{
@@ -846,7 +866,7 @@ export default function App() {
       </div>
 
       <div className="muted" style={{ opacity: 0.7 }}>
-        Preview auto-fits. Exports honour the exact artboard size and include overlay and background rectangles.
+        Preview auto-fits (with zoom). Exports honour the exact artboard size and include overlay and background rectangles.
       </div>
     </div>
   );
