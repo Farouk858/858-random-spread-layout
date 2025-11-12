@@ -2,12 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import JSZip from "jszip";
 
 /**
- * 858 Random Spread Layout — Pure React
- * - Preview auto-fits 100% of available viewport height (toolbars measured, canvas scales to fit)
- * - Auto Spread: flows items L→R, top→bottom; auto-adds boards (up to MAX) to avoid overlaps
- * - Pack / Pack Bottom use the same auto-grow placement core
- * - Background rectangles with colour pickers & ranges
- * - Overlay image, ZIP export, editorial 3-up first page, shuffle, z-order, presets
+ * 858 Random Spread Layout — Dark UI + Manual Preview Zoom
+ * - Black background & controls
+ * - Manual Preview Zoom (slider + quick buttons), no responsive auto-fit
+ * - Auto-spread with first-page 3-up (tight or spaced), auto-add boards (up to 20)
+ * - Background rectangles (colour pickers + size/opacity controls)
+ * - Overlay, ZIP export, shuffle, z-order, presets
  */
 
 const MAX_BOARDS = 20;
@@ -150,12 +150,12 @@ function Item({ node, selected, onSelect, onChange }) {
       {imgEl ? (
         <img src={node.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
       ) : (
-        <div style={{ width: "100%", height: "100%", background: "#eee" }} />
+        <div style={{ width: "100%", height: "100%", background: "#111" }} />
       )}
 
       {selected && (
         <>
-          <div style={{ position: "absolute", inset: 0, border: "1px dashed #4f46e5", pointerEvents: "none" }} />
+          <div style={{ position: "absolute", inset: 0, border: "1px dashed #6b7280", pointerEvents: "none" }} />
           {[
             ["nw", 0, 0],
             ["ne", "100%", 0],
@@ -171,7 +171,7 @@ function Item({ node, selected, onSelect, onChange }) {
                 left: typeof l === "number" ? l - 6 : l,
                 top: typeof t === "number" ? t - 6 : t,
                 width: 12, height: 12,
-                background: "#fff", border: "1px solid #000",
+                background: "#000", border: "1px solid #555",
                 borderRadius: 2,
                 transform: typeof l === "string" || typeof t === "string" ? "translate(-50%, -50%)" : undefined,
                 cursor: `${dir}-resize`,
@@ -184,34 +184,31 @@ function Item({ node, selected, onSelect, onChange }) {
   );
 }
 
-// ---------- main app ----------
+// ---------- main ----------
 export default function App() {
-  // default 1080w × 1320h portrait
+  // Default portrait
   const [boardW, setBoardW] = useState(1080);
   const [boardH, setBoardH] = useState(1320);
   const [boards, setBoards] = useState(6);
   const [showGrid, setShowGrid] = useState(true);
 
-  // preview scale
-  const [previewScale, setPreviewScale] = useState(1);
-  const topBarRef = useRef(null);
-  const secondBarRef = useRef(null);
-  const wrapperRef = useRef(null);
+  // Manual preview scale (no auto-fit)
+  const [previewScale, setPreviewScale] = useState(0.9);
 
-  // layout + items
+  // layout
   const [spacing, setSpacing] = useState(24);
   const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
 
   // export
   const [pixelRatio, setPixelRatio] = useState(2);
-  const [exportBg, setExportBg] = useState("#fff");
+  const [exportBg, setExportBg] = useState("#000"); // black default export bg to match theme
 
   // overlay
   const [overlayUrl, setOverlayUrl] = useState("");
   const [overlayOpacity, setOverlayOpacity] = useState(0.25);
 
-  // rectangles layer
+  // rectangles
   const [showRects, setShowRects] = useState(false);
   const [rects, setRects] = useState([]);
 
@@ -223,45 +220,30 @@ export default function App() {
   const [rectMaxHpc, setRectMaxHpc] = useState(18);
   const [rectOpacityMin, setRectOpacityMin] = useState(6);
   const [rectOpacityMax, setRectOpacityMax] = useState(14);
-  const [rectColorA, setRectColorA] = useState("#0f172a");
-  const [rectColorB, setRectColorB] = useState("#111827");
+  const [rectColorA, setRectColorA] = useState("#0a0a0a");
+  const [rectColorB, setRectColorB] = useState("#1a1a1a");
 
   const [lastEditorialTight, setLastEditorialTight] = useState(false);
 
   const SPREAD_W = useMemo(() => boards * boardW, [boards, boardW]);
   const SPREAD_H = boardH;
 
-  // presets
   const PRESETS = [
     { label: "1080 × 1320 (Portrait)", w: 1080, h: 1320 },
     { label: "1320 × 1080 (Landscape)", w: 1320, h: 1080 },
     { label: "1080 × 1080 (Square)", w: 1080, h: 1080 },
     { label: "1920 × 1080 (16:9)", w: 1920, h: 1080 },
-    { label: "1350 × 1080 (IG)", w: 1350, h: 1080 },
   ];
 
-  // --- preview: fit 100% of available viewport height (after toolbars), never >1x (no blur)
-  const fitPreview = useCallback(() => {
-    const wEl = wrapperRef.current;
-    if (!wEl) return;
-    const topH = topBarRef.current?.getBoundingClientRect().height || 0;
-    const secH = secondBarRef.current?.getBoundingClientRect().height || 0;
-    const margins = 16; // bottom breathing room
-    const availH = Math.max(100, window.innerHeight - topH - secH - margins);
-    const availW = wEl.clientWidth - 2;
-    const scaleH = availH / SPREAD_H;
-    const scaleW = availW / SPREAD_W;
-    const scale = Math.min(1, Math.min(scaleH, scaleW));
-    setPreviewScale(isFinite(scale) && scale > 0 ? scale : 1);
-  }, [SPREAD_W, SPREAD_H]);
-
-  useEffect(() => {
-    fitPreview();
-    window.addEventListener("resize", fitPreview);
-    return () => window.removeEventListener("resize", fitPreview);
-  }, [fitPreview]);
-
-  useEffect(() => { fitPreview(); }, [boardW, boardH, boards, fitPreview]);
+  // ---- styles (dark) ----
+  const col = {
+    page: { background: "#000", color: "#d1d5db", minHeight: "100vh", fontFamily: "ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial" },
+    bar: { display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "8px 10px", background: "#000", borderBottom: "1px solid #111" },
+    label: { color: "#9ca3af", fontSize: 12 },
+    btn: { background: "#0a0a0a", color: "#e5e7eb", border: "1px solid #1f2937", borderRadius: 8, padding: "6px 10px", cursor: "pointer" },
+    input: { background: "#0a0a0a", color: "#e5e7eb", border: "1px solid #1f2937", borderRadius: 8, padding: "6px 8px" },
+    select: { background: "#0a0a0a", color: "#e5e7eb", border: "1px solid #1f2937", borderRadius: 8, padding: "6px 8px" },
+  };
 
   // add images
   const onDropFiles = useCallback(async (fileList) => {
@@ -297,11 +279,7 @@ export default function App() {
     );
   }, [boardW]);
 
-  // ---------- AUTO-GROW PLACEMENT CORE ----------
-  /**
-   * Flow placement L→R, top→bottom. If a node won't fit in current spread,
-   * increments boards (up to MAX) and tries again. Returns placed items and new board count.
-   */
+  // ---------- auto-grow placer ----------
   function flowPlaceAutoGrow(sourceItems, tight) {
     const m = tight ? 0 : spacing;
     let b = Math.max(1, boards);
@@ -320,27 +298,20 @@ export default function App() {
         if (w <= 0 || h <= 0) { w = 100; h = 80; }
 
         if (x + w > SPW) { // new row
-          x = Math.floor(x / boardW) * boardW; // align to board boundary
+          x = Math.floor(x / boardW) * boardW;
           y += rowH + m;
           rowH = 0;
         }
-        // push to next board if crossing boundary
         const rightEdge = Math.ceil((x + 1) / boardW) * boardW;
-        if (x + w > rightEdge) {
-          x = rightEdge + (m ? m : 0);
-        }
-        if (x + w > SPW) {
-          // cannot fit in current boards
-          return false;
-        }
+        if (x + w > rightEdge) x = rightEdge + (m ? m : 0);
+        if (x + w > SPW) return false;
+
         if (y + h > boardH) {
-          // new column (next board)
           x = (Math.floor(x / boardW) + 1) * boardW;
           y = 0;
           rowH = 0;
           if (x + w > SPW) return false;
         }
-
         res.push({ ...n, x, y, w, h });
         x += w + m;
         rowH = Math.max(rowH, h);
@@ -348,16 +319,11 @@ export default function App() {
       return true;
     };
 
-    // first attempt with current boards then grow
     let ok = tryPlaceAll();
-    while (!ok && b < MAX_BOARDS) {
-      b += 1;
-      ok = tryPlaceAll();
-    }
+    while (!ok && b < MAX_BOARDS) { b += 1; ok = tryPlaceAll(); }
     return { placed: ok ? res : sourceItems, usedBoards: b };
   }
 
-  // random positions (non-auto-grow)
   const randomise = useCallback(() => {
     const placed = [];
     const tryPlace = (node) => {
@@ -377,7 +343,6 @@ export default function App() {
     setItems((prev) => prev.map(tryPlace));
   }, [SPREAD_W, SPREAD_H, spacing, boardW]);
 
-  // pack using auto-grow scanning
   const packTop = useCallback(() => {
     const sorted = [...items].sort((a, b) => b.w * b.h - a.w * a.h);
     const { placed, usedBoards } = flowPlaceAutoGrow(sorted, false);
@@ -386,34 +351,30 @@ export default function App() {
   }, [items]);
 
   const packBottom = useCallback(() => {
-    // invert Y with a transform: place with flow then shift to bottom row-wise
     const sorted = [...items].sort((a, b) => b.w * b.h - a.w * a.h);
     const { placed, usedBoards } = flowPlaceAutoGrow(sorted, false);
-    // snap rows toward bottom per board
+    // simple bottom align per row per board
     const byBoard = new Map();
     placed.forEach(n => {
       const bi = Math.floor(n.x / boardW);
       if (!byBoard.has(bi)) byBoard.set(bi, []);
       byBoard.get(bi).push(n);
     });
-    byBoard.forEach((arr, bi) => {
-      // compute rows by y
+    byBoard.forEach(arr => {
+      // group by approx row y
       arr.sort((a, b) => a.y - b.y);
       let cursor = boardH;
-      let rowStart = 0;
-      while (rowStart < arr.length) {
-        let rowEnd = rowStart;
-        let rowH = arr[rowStart].h;
-        // same row if overlap in y-range approximately
-        while (rowEnd + 1 < arr.length && Math.abs(arr[rowEnd + 1].y - arr[rowStart].y) < 12) {
-          rowEnd++;
-          rowH = Math.max(rowH, arr[rowEnd].h);
+      let i = 0;
+      while (i < arr.length) {
+        let j = i;
+        let rowH = arr[i].h;
+        while (j + 1 < arr.length && Math.abs(arr[j + 1].y - arr[i].y) < 12) {
+          j++;
+          rowH = Math.max(rowH, arr[j].h);
         }
-        cursor -= rowH + spacing;
-        for (let i = rowStart; i <= rowEnd; i++) {
-          arr[i].y = Math.max(0, cursor);
-        }
-        rowStart = rowEnd + 1;
+        cursor -= (rowH + spacing);
+        for (let k = i; k <= j; k++) arr[k].y = Math.max(0, cursor);
+        i = j + 1;
       }
     });
     setBoards(usedBoards);
@@ -470,15 +431,13 @@ export default function App() {
     setItems(next);
   };
 
-  // ---------- EDITORIAL LAYOUTS WITH AUTO-GROW ----------
+  // ---------- Editorial ----------
   function firstPageThreeUp(arr, tight) {
     if (arr.length < 1) return arr;
     const s = [...arr];
-
     const hero = s[0];
     const b1 = s[1] || null;
     const b2 = s[2] || null;
-
     const m = tight ? 0 : spacing;
     const heroH = Math.round(boardH * 0.56);
     const bottomH = boardH - heroH - (tight ? 0 : m);
@@ -495,7 +454,6 @@ export default function App() {
   }
 
   const autoSpread = (tight) => {
-    // keep first page rule, then flow the rest with auto-grow
     const m = tight ? 0 : spacing;
     const s = [...items];
     let startIdx = 0;
@@ -509,10 +467,8 @@ export default function App() {
     const head = s.slice(0, startIdx);
     const tail = s.slice(startIdx);
     const { placed, usedBoards } = flowPlaceAutoGrow(tail, tight);
-
-    // shift placed tail to start at board 1 (not page 0), so keep page 0 for first 3-up
     const shifted = placed.map(n => ({ ...n, x: n.x + boardW + (m ? m : 0) }));
-    setBoards(usedBoards); // usedBoards already counts from 1, but we added a margin; still fine
+    setBoards(usedBoards);
     setItems([...head, ...shifted]);
     setLastEditorialTight(tight);
   };
@@ -528,11 +484,10 @@ export default function App() {
       }
       return arr;
     });
-    // re-run the last editorial style to keep layout intention
     setTimeout(() => autoSpread(lastEditorialTight), 0);
   };
 
-  // ---------- BACKGROUND RECTS ----------
+  // ---------- background rects ----------
   const generateRects = useCallback(() => {
     const list = [];
     const cols = Math.max(1, rectCols);
@@ -565,7 +520,7 @@ export default function App() {
 
   useEffect(() => { if (showRects) generateRects(); }, [showRects, generateRects]);
 
-  // export helpers
+  // export
   const triggerDownload = (url, filename) => {
     const a = document.createElement("a");
     a.href = url;
@@ -601,7 +556,7 @@ export default function App() {
         const ctx = canvas.getContext("2d");
 
         if (exportBg || type === "image/jpeg") {
-          ctx.fillStyle = exportBg || "#fff";
+          ctx.fillStyle = exportBg || "#000";
           ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
@@ -661,11 +616,8 @@ export default function App() {
         const ext = type === "image/jpeg" ? "jpg" : "png";
         const name = `858 art club_${i + 1}.${ext}`;
 
-        if (zipMode) {
-          zip.file(name, dataUrl.split(",")[1], { base64: true });
-        } else {
-          triggerDownload(dataUrl, name);
-        }
+        if (zipMode) zip.file(name, dataUrl.split(",")[1], { base64: true });
+        else triggerDownload(dataUrl, name);
       }
 
       if (zipMode) {
@@ -687,125 +639,142 @@ export default function App() {
   const applyPreset = (p) => {
     setBoardW(p.w);
     setBoardH(p.h);
-    setTimeout(() => fitPreview(), 0);
   };
 
+  // UI helpers
+  const QuickZoom = ({ value, onClick }) => (
+    <button style={col.btn} onClick={onClick}>{value}%</button>
+  );
+
   return (
-    <div
-      className="app"
-      style={{ display: "flex", flexDirection: "column", gap: 8, padding: 8 }}
+    <div style={col.page}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); onDropFiles(e.dataTransfer.files); }}
     >
-      {/* Top toolbar */}
-      <div ref={topBarRef} className="toolbar" style={{ gap: 6, flexWrap: "wrap", display: "flex", alignItems: "center" }}>
-        <strong>858 Random Spread Layout</strong>
+      {/* Top bar */}
+      <div style={col.bar}>
+        <div style={{ fontWeight: 700, letterSpacing: 0.2 }}>858 Random Spread Layout</div>
 
-        <span className="muted">Boards</span>
-        <select value={boards} onChange={(e) => setBoards(clamp(parseInt(e.target.value, 10), 1, MAX_BOARDS))}>
+        <span style={col.label}>Boards</span>
+        <select style={col.select} value={boards} onChange={(e) => setBoards(clamp(parseInt(e.target.value, 10), 1, MAX_BOARDS))}>
           {Array.from({ length: MAX_BOARDS }, (_, i) => i + 1).map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
         </select>
 
-        <span className="muted">Preset</span>
-        <select onChange={(e) => applyPreset(PRESETS[e.target.selectedIndex])}>
+        <span style={col.label}>Preset</span>
+        <select style={col.select} onChange={(e) => applyPreset(PRESETS[e.target.selectedIndex])}>
           {PRESETS.map((p) => (<option key={p.label}>{p.label}</option>))}
         </select>
 
-        <span className="muted">W</span>
-        <input type="number" value={boardW} onChange={(e) => setBoardW(clamp(parseInt(e.target.value || "1", 10), 200, 8000))} style={{ width: 80 }} />
+        <span style={col.label}>W</span>
+        <input style={{ ...col.input, width: 90 }} type="number" value={boardW} onChange={(e) => setBoardW(clamp(parseInt(e.target.value || "1", 10), 200, 8000))} />
+        <span style={col.label}>H</span>
+        <input style={{ ...col.input, width: 90 }} type="number" value={boardH} onChange={(e) => setBoardH(clamp(parseInt(e.target.value || "1", 10), 200, 8000))} />
 
-        <span className="muted">H</span>
-        <input type="number" value={boardH} onChange={(e) => setBoardH(clamp(parseInt(e.target.value || "1", 10), 200, 8000))} style={{ width: 80 }} />
+        <span style={col.label}>Spacing</span>
+        <input style={{ ...col.input, width: 70 }} type="number" value={spacing} onChange={(e) => setSpacing(clamp(parseInt(e.target.value || "0", 10), 0, 400))} />
 
-        <span className="muted">Spacing</span>
-        <input type="number" value={spacing} onChange={(e) => setSpacing(clamp(parseInt(e.target.value || "0", 10), 0, 400))} style={{ width: 70 }} />
+        <button style={col.btn} onClick={randomiseSizes}>Rand Sizes</button>
+        <button style={col.btn} onClick={randomise}>Randomise</button>
+        <button style={col.btn} onClick={packTop}>Pack</button>
+        <button style={col.btn} onClick={packBottom}>Pack Bottom</button>
+        <button style={col.btn} onClick={snapBottom}>Snap Bottom</button>
+        <button style={col.btn} onClick={scatterBoards}>Scatter Boards</button>
 
-        <button onClick={randomiseSizes}>Rand Sizes</button>
-        <button onClick={randomise}>Randomise</button>
-        <button onClick={packTop}>Pack</button>
-        <button onClick={packBottom}>Pack Bottom</button>
-        <button onClick={snapBottom}>Snap Bottom</button>
-        <button onClick={scatterBoards}>Scatter Boards</button>
+        <button style={col.btn} onClick={() => setShowGrid((s) => !s)}>{showGrid ? "Hide Grid" : "Show Grid"}</button>
 
-        <button onClick={() => setShowGrid((s) => !s)}>Toggle Grid</button>
+        <span style={col.label}>Export Scale</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={4} value={pixelRatio} onChange={(e) => setPixelRatio(clamp(parseInt(e.target.value || "1", 10), 1, 4))} />
 
-        <span className="muted">Export Scale</span>
-        <input type="number" min={1} max={4} value={pixelRatio} onChange={(e) => setPixelRatio(clamp(parseInt(e.target.value || "1", 10), 1, 4))} style={{ width: 50 }} />
-
-        <select value={exportBg ? "white" : "transparent"} onChange={(e) => setExportBg(e.target.value === "white" ? "#fff" : "")}>
-          <option value="white">White BG</option>
+        <select style={col.select} value={exportBg ? "black" : "transparent"} onChange={(e) => setExportBg(e.target.value === "black" ? "#000" : "")}>
+          <option value="black">Black BG</option>
           <option value="transparent">Transparent PNG</option>
         </select>
 
-        <button onClick={() => exportBoards("image/png")}>Export PNG</button>
-        <button onClick={() => exportBoards("image/jpeg")}>Export JPG</button>
-        <button onClick={() => exportBoards("image/png", 0.95, true)}>Export ZIP</button>
+        <button style={col.btn} onClick={() => exportBoards("image/png")}>Export PNG</button>
+        <button style={col.btn} onClick={() => exportBoards("image/jpeg")}>Export JPG</button>
+        <button style={col.btn} onClick={() => exportBoards("image/png", 0.95, true)}>Export ZIP</button>
       </div>
 
-      {/* Secondary toolbar */}
-      <div ref={secondBarRef} className="toolbar" style={{ gap: 6, display: "flex", flexWrap: "wrap", alignItems: "center" }}>
+      {/* Secondary bar */}
+      <div style={col.bar}>
         <strong>Editorial</strong>
-        <button onClick={() => autoSpread(false)}>Auto Spread</button>
-        <button onClick={() => autoSpread(true)}>Auto Spread (tight)</button>
-        <button onClick={shuffleOrder}>Shuffle order</button>
+        <button style={col.btn} onClick={() => editorialSpaced()}>Auto Spread</button>
+        <button style={col.btn} onClick={() => editorialTight()}>Auto Spread (tight)</button>
+        <button style={col.btn} onClick={shuffleOrder}>Shuffle order</button>
 
-        <strong style={{ marginLeft: 8 }}>Background</strong>
-        <button onClick={() => setShowRects((s) => !s)}>{showRects ? "Hide Rects" : "Show Rects"}</button>
-        <button onClick={generateRects} disabled={!showRects}>Regenerate</button>
+        <strong style={{ marginLeft: 12 }}>Background</strong>
+        <button style={col.btn} onClick={() => setShowRects((s) => !s)}>{showRects ? "Hide Rects" : "Show Rects"}</button>
+        <button style={col.btn} onClick={generateRects} disabled={!showRects}>Regenerate</button>
 
-        <span className="muted">Cols</span>
-        <input type="number" min={1} max={20} value={rectCols} onChange={(e) => setRectCols(clamp(parseInt(e.target.value||"1",10),1,20))} style={{ width: 60 }} />
-        <span className="muted">Rows</span>
-        <input type="number" min={1} max={20} value={rectRows} onChange={(e) => setRectRows(clamp(parseInt(e.target.value||"1",10),1,20))} style={{ width: 60 }} />
+        <span style={col.label}>Cols</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={20} value={rectCols} onChange={(e) => setRectCols(clamp(parseInt(e.target.value||"1",10),1,20))} />
+        <span style={col.label}>Rows</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={20} value={rectRows} onChange={(e) => setRectRows(clamp(parseInt(e.target.value||"1",10),1,20))} />
 
-        <span className="muted">W%</span>
-        <input type="number" min={1} max={100} value={rectMinWpc} onChange={(e)=>setRectMinWpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
-        <span className="muted">→</span>
-        <input type="number" min={1} max={100} value={rectMaxWpc} onChange={(e)=>setRectMaxWpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+        <span style={col.label}>W%</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={100} value={rectMinWpc} onChange={(e)=>setRectMinWpc(clamp(parseInt(e.target.value||"1",10),1,100))} />
+        <span style={col.label}>→</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={100} value={rectMaxWpc} onChange={(e)=>setRectMaxWpc(clamp(parseInt(e.target.value||"1",10),1,100))} />
 
-        <span className="muted">H%</span>
-        <input type="number" min={1} max={100} value={rectMinHpc} onChange={(e)=>setRectMinHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
-        <span className="muted">→</span>
-        <input type="number" min={1} max={100} value={rectMaxHpc} onChange={(e)=>setRectMaxHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
+        <span style={col.label}>H%</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={100} value={rectMinHpc} onChange={(e)=>setRectMinHpc(clamp(parseInt(e.target.value||"1",10),1,100))} />
+        <span style={col.label}>→</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={1} max={100} value={rectMaxHpc} onChange={(e)=>setRectMaxHpc(clamp(parseInt(e.target.value||"1",10),1,100))} />
 
-        <span className="muted">Opacity</span>
-        <input type="number" min={0} max={100} value={rectOpacityMin} onChange={(e)=>setRectOpacityMin(clamp(parseInt(e.target.value||"0",10),0,100))} style={{ width: 55 }} />
-        <span className="muted">→</span>
-        <input type="number" min={0} max={100} value={rectOpacityMax} onChange={(e)=>setRectOpacityMax(clamp(parseInt(e.target.value||"0",10),0,100))} style={{ width: 55 }} />
+        <span style={col.label}>Opacity</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={0} max={100} value={rectOpacityMin} onChange={(e)=>setRectOpacityMin(clamp(parseInt(e.target.value||"0",10),0,100))} />
+        <span style={col.label}>→</span>
+        <input style={{ ...col.input, width: 56 }} type="number" min={0} max={100} value={rectOpacityMax} onChange={(e)=>setRectOpacityMax(clamp(parseInt(e.target.value||"0",10),0,100))} />
 
-        <span className="muted">Colour A</span>
+        <span style={col.label}>Colour A</span>
         <input type="color" value={rectColorA} onChange={(e)=>setRectColorA(e.target.value)} />
-        <span className="muted">Colour B</span>
+        <span style={col.label}>Colour B</span>
         <input type="color" value={rectColorB} onChange={(e)=>setRectColorB(e.target.value)} />
 
-        <strong style={{ marginLeft: 8 }}>Overlay</strong>
-        <label>
-          Upload
-          <input type="file" accept="image/*" style={{ marginLeft: 6 }} onChange={(e) => e.target.files && onOverlayUpload(e.target.files[0])} />
+        <strong style={{ marginLeft: 12 }}>Overlay</strong>
+        <label style={{ ...col.btn, padding: 0 }}>
+          <span style={{ display: "inline-block", padding: "6px 10px" }}>Upload</span>
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files && onOverlayUpload(e.target.files[0])} />
         </label>
-        <span className="muted">Opacity</span>
-        <input type="range" min={0} max={1} step={0.01} value={overlayOpacity} onChange={(e) => setOverlayOpacity(parseFloat(e.target.value))} style={{ width: 140 }} />
-        <span className="muted">{Math.round(overlayOpacity * 100)}%</span>
+        <span style={col.label}>Opacity</span>
+        <input type="range" min={0} max={1} step={0.01} value={overlayOpacity} onChange={(e) => setOverlayOpacity(parseFloat(e.target.value))} />
 
-        <strong style={{ marginLeft: 8 }}>Stack</strong>
-        <button onClick={sendToBack}>Send to Back</button>
-        <button onClick={sendBackward}>Send Backward</button>
-        <button onClick={bringForward}>Bring Forward</button>
-        <button onClick={bringToFront}>Bring to Front</button>
+        <strong style={{ marginLeft: 12 }}>Stack</strong>
+        <button style={col.btn} onClick={sendToBack}>Send to Back</button>
+        <button style={col.btn} onClick={sendBackward}>Send Backward</button>
+        <button style={col.btn} onClick={bringForward}>Bring Forward</button>
+        <button style={col.btn} onClick={bringToFront}>Bring to Front</button>
 
-        <label style={{ marginLeft: 8 }}>
-          Add images
-          <input type="file" multiple accept="image/*" style={{ marginLeft: 6 }} onChange={(e) => e.target.files && onDropFiles(e.target.files)} />
+        <label style={{ ...col.btn, padding: 0, marginLeft: 12 }}>
+          <span style={{ display: "inline-block", padding: "6px 10px" }}>Add images</span>
+          <input type="file" multiple accept="image/*" style={{ display: "none" }} onChange={(e) => e.target.files && onDropFiles(e.target.files)} />
         </label>
+
+        {/* Manual Preview Zoom */}
+        <strong style={{ marginLeft: 12 }}>Preview Zoom</strong>
+        <input
+          type="range" min={0.25} max={2} step={0.01}
+          value={previewScale}
+          onChange={(e) => setPreviewScale(parseFloat(e.target.value))}
+          style={{ width: 160 }}
+        />
+        <input
+          style={{ ...col.input, width: 70 }}
+          type="number" min={25} max={200}
+          value={Math.round(previewScale * 100)}
+          onChange={(e) => setPreviewScale(clamp(parseInt(e.target.value || "100",10)/100, 0.25, 2))}
+        />
+        <QuickZoom value={50} onClick={() => setPreviewScale(0.5)} />
+        <QuickZoom value={75} onClick={() => setPreviewScale(0.75)} />
+        <QuickZoom value={100} onClick={() => setPreviewScale(1)} />
+        <QuickZoom value={150} onClick={() => setPreviewScale(1.5)} />
       </div>
 
-      {/* Spread preview (fills available viewport height at 100% scale-or-under) */}
+      {/* Spread */}
       <div
-        ref={wrapperRef}
-        className="spreadWrapper"
-        style={{ border: "1px solid #e5e7eb", overflowX: "auto", overflowY: "hidden", width: "100%" }}
+        style={{ borderTop: "1px solid #111", overflowX: "auto", overflowY: "hidden", width: "100%" }}
         onClick={(e) => { if (e.target === e.currentTarget) setSelectedId(null); }}
       >
         <div
@@ -815,7 +784,7 @@ export default function App() {
             height: SPREAD_H,
             transform: `scale(${previewScale})`,
             transformOrigin: "top left",
-            background: "#fff",
+            background: "#000",
           }}
         >
           {/* grid */}
@@ -829,7 +798,7 @@ export default function App() {
                   top: 0,
                   width: boardW,
                   height: boardH,
-                  border: "1px solid #e5e7eb",
+                  border: "1px solid #1f2937",
                   pointerEvents: "none",
                 }}
               />
@@ -864,7 +833,7 @@ export default function App() {
             />
           ))}
 
-          {/* overlay preview */}
+          {/* overlay */}
           {overlayUrl && (
             <img
               src={overlayUrl}
@@ -879,14 +848,15 @@ export default function App() {
                 objectFit: "cover",
                 opacity: clamp(overlayOpacity, 0, 1),
                 pointerEvents: "none",
+                mixBlendMode: "normal",
               }}
             />
           )}
         </div>
       </div>
 
-      <div className="muted" style={{ opacity: 0.7 }}>
-        Preview fits remaining viewport height at 100% scale or under. Auto Spread, Pack, and Pack Bottom will add boards if needed to avoid overlaps.
+      <div style={{ padding: 10, color: "#6b7280", fontSize: 12 }}>
+        Manual zoom is active. Use the slider, number, or quick buttons. Exports are always full resolution, independent of preview zoom.
       </div>
     </div>
   );
