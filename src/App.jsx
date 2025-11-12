@@ -1,26 +1,43 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 
-/** ============ Constants ============ */
+/* ---------------------------- constants ---------------------------- */
 const MAX_BOARDS = 20;
 const DEFAULT_W = 1080;
-const DEFAULT_H = 1320; // portrait first page as requested
+const DEFAULT_H = 1320;
 const DEFAULT_SPACING = 24;
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const shuffle = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+const PRESETS = [
+  { name: "1080 x 1320 (Portrait)", w: 1080, h: 1320 },
+  { name: "1320 x 1080 (Landscape)", w: 1320, h: 1080 },
+  { name: "1080 x 1080 (Square)", w: 1080, h: 1080 },
+  { name: "1440 x 1080 (Widescreen)", w: 1440, h: 1080 },
+];
+
 const BOARD_LABEL_STYLE = {
   position: "absolute",
   top: 6,
   left: 6,
-  fontSize: 14, // bigger label
+  fontSize: 14,
   fontWeight: 700,
   letterSpacing: 0.5,
-  color: "rgba(127,255,127,0.8)",
+  color: "rgba(127,255,127,0.9)",
   userSelect: "none",
   pointerEvents: "none",
 };
-const uid = () => Math.random().toString(36).slice(2, 10);
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-/** Helper: rect intersection */
+/* -------------------------- helper functions -------------------------- */
 function intersect(ax, ay, aw, ah, bx, by, bw, bh) {
   const x1 = Math.max(ax, bx);
   const y1 = Math.max(ay, by);
@@ -31,32 +48,17 @@ function intersect(ax, ay, aw, ah, bx, by, bw, bh) {
   if (w <= 0 || h <= 0) return null;
   return { x: x1, y: y1, w, h };
 }
-
-/** “object-fit: cover” source crop maths (no distortion) */
-function coverCrop(naturalW, naturalH, frameW, frameH, sx = 0, sy = 0, sw = frameW, sh = frameH) {
-  const frameAR = frameW / frameH;
-  const natAR = naturalW / naturalH;
-
+function coverCrop(nW, nH, fW, fH, sx = 0, sy = 0, sw = fW, sh = fH) {
+  const fAR = fW / fH, sAR = nW / nH;
   let coverW, coverH;
-  if (natAR > frameAR) {
-    // wider source -> scale by height
-    coverH = naturalH;
-    coverW = frameAR * coverH;
-  } else {
-    // taller source -> scale by width
-    coverW = naturalW;
-    coverH = coverW / frameAR;
-  }
-  // centre crop
-  const srcX = (naturalW - coverW) / 2 + (sx / frameW) * coverW;
-  const srcY = (naturalH - coverH) / 2 + (sy / frameH) * coverH;
-  const srcW = (sw / frameW) * coverW;
-  const srcH = (sh / frameH) * coverH;
-
+  if (sAR > fAR) { coverH = nH; coverW = fAR * coverH; }
+  else { coverW = nW; coverH = coverW / fAR; }
+  const srcX = (nW - coverW) / 2 + (sx / fW) * coverW;
+  const srcY = (nH - coverH) / 2 + (sy / fH) * coverH;
+  const srcW = (sw / fW) * coverW;
+  const srcH = (sh / fH) * coverH;
   return { sx: srcX, sy: srcY, sw: srcW, sh: srcH };
 }
-
-/** Load to HTMLImageElement */
 function useImg(src) {
   const [img, setImg] = useState(null);
   useEffect(() => {
@@ -69,12 +71,11 @@ function useImg(src) {
   return img;
 }
 
-/** ============ Item (draggable/resizable) ============ */
+/* ------------------------------- Item ------------------------------- */
 function Item({ node, selected, onSelect, onChange }) {
   const ref = useRef(null);
   const img = useImg(node.src);
 
-  // persist natural size on the node for export mapping
   useEffect(() => {
     if (!img) return;
     if (node._natW !== img.naturalWidth || node._natH !== img.naturalHeight) {
@@ -83,36 +84,34 @@ function Item({ node, selected, onSelect, onChange }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [img]);
 
-  // drag
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
 
-    const d = (e) => {
-      if (e.button === 2 || e.target.dataset.handle) return;
-      drag = true;
+    const down = (e) => {
+      if (e.target.dataset.handle) return;
+      dragging = true;
       const p = e.touches?.[0] || e;
       sx = p.clientX; sy = p.clientY; ox = node.x; oy = node.y;
-      window.addEventListener("pointermove", m);
-      window.addEventListener("pointerup", u);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
       onSelect(node.id);
     };
-    const m = (e) => {
-      if (!drag) return;
+    const move = (e) => {
+      if (!dragging) return;
       const p = e.touches?.[0] || e;
       onChange({ ...node, x: ox + (p.clientX - sx), y: oy + (p.clientY - sy) });
     };
-    const u = () => {
-      drag = false;
-      window.removeEventListener("pointermove", m);
-      window.removeEventListener("pointerup", u);
+    const up = () => {
+      dragging = false;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
     };
-    el.addEventListener("pointerdown", d);
-    return () => el.removeEventListener("pointerdown", d);
+    el.addEventListener("pointerdown", down);
+    return () => el.removeEventListener("pointerdown", down);
   }, [node, onChange, onSelect]);
 
-  // resize
   const startResize = (dir, e) => {
     e.stopPropagation();
     const p0 = e.touches?.[0] || e;
@@ -140,9 +139,8 @@ function Item({ node, selected, onSelect, onChange }) {
     <div
       ref={ref}
       style={{
-        position: "absolute",
-        left: node.x, top: node.y, width: node.w, height: node.h,
-        border: selected ? "1px dashed rgba(180,255,180,0.7)" : "none",
+        position: "absolute", left: node.x, top: node.y, width: node.w, height: node.h,
+        border: selected ? "1px dashed rgba(180,255,180,0.8)" : "none",
         cursor: "grab", userSelect: "none",
       }}
       onClick={() => onSelect(node.id)}
@@ -158,87 +156,73 @@ function Item({ node, selected, onSelect, onChange }) {
         <div style={{ width: "100%", height: "100%", background: "#222" }} />
       )}
 
-      {selected && (
-        ["nw","ne","sw","se"].map((dir) => {
-          const pos = {
-            position: "absolute",
-            width: 12, height: 12, background: "#111",
-            border: "1px solid #8bff8b", borderRadius: 2,
-            transform: "translate(-50%,-50%)"
-          };
-          const p = {
-            nw: { left: 0, top: 0 }, ne: { left: "100%", top: 0 },
-            sw: { left: 0, top: "100%" }, se: { left: "100%", top: "100%" },
-          }[dir];
-          return (
-            <span
-              key={dir}
-              data-handle
-              onPointerDown={(e) => startResize(dir, e)}
-              style={{ ...pos, ...p, cursor: `${dir}-resize` }}
-            />
-          );
-        })
-      )}
+      {selected && ["nw","ne","sw","se"].map((dir) => {
+        const base = {
+          position: "absolute", width: 12, height: 12, background: "#0e0e0e",
+          border: "1px solid #88ff88", borderRadius: 2, transform: "translate(-50%,-50%)"
+        };
+        const pos = { nw:{left:0,top:0}, ne:{left:"100%",top:0}, sw:{left:0,top:"100%"}, se:{left:"100%",top:"100%"} }[dir];
+        return (
+          <span key={dir} data-handle onPointerDown={(e)=>startResize(dir,e)}
+                style={{ ...base, ...pos, cursor:`${dir}-resize` }} />
+        );
+      })}
     </div>
   );
 }
 
-/** ============ Main App ============ */
+/* ------------------------------ App ------------------------------ */
 export default function App() {
-  // geometry
+  /* geometry */
   const [boards, setBoards] = useState(6);
   const [BW, setBW] = useState(DEFAULT_W);
   const [BH, setBH] = useState(DEFAULT_H);
   const [spacing, setSpacing] = useState(DEFAULT_SPACING);
 
-  // preview
-  const [zoom, setZoom] = useState(0.6); // manual
+  /* preview */
+  const [zoom, setZoom] = useState(0.62);
   const [showGuides, setShowGuides] = useState(true);
   const [guideColour, setGuideColour] = useState("#00ff5c");
   const [guideAlpha, setGuideAlpha] = useState(0.35);
 
-  // content
-  const [images, setImages] = useState([]); // {id, src, x,y,w,h, _natW,_natH}
+  /* content */
+  const [images, setImages] = useState([]);
   const [selected, setSelected] = useState(null);
 
-  // background
-  const [bgColour, setBgColour] = useState("#000000");
+  /* overlay shapes */
+  const [overlayVisible, setOverlayVisible] = useState(true);
+  const [overlayOpacity, setOverlayOpacity] = useState(1);
+  const [overlayColourA, setOverlayColourA] = useState("#1aff5c");
+  const [overlayColourB, setOverlayColourB] = useState("#00a0ff");
+  const [overlayShapes, setOverlayShapes] = useState([]); // {id, type:'bar'|'rect'|'circle'|'plus', board, x,y,w,h,r}
+  const [overlaySeed, setOverlaySeed] = useState(0);
 
-  // colour favourites (persist)
-  const [colours, setColours] = useState(() => {
+  /* colours favourites (background) */
+  const [bgColour, setBgColour] = useState("#000");
+  const [fav, setFav] = useState(() => {
     const raw = localStorage.getItem("favColours858");
-    return raw ? JSON.parse(raw) : ["#00ff5c", "#ffffff", "#1a1a1a", "#ff00ff", "#00c0ff"];
+    return raw ? JSON.parse(raw) : ["#000000", "#0b0b0b", "#ffffff", "#00ff5c", "#00c0ff", "#ff00ff"];
   });
-  useEffect(() => {
-    localStorage.setItem("favColours858", JSON.stringify(colours));
-  }, [colours]);
+  useEffect(()=>localStorage.setItem("favColours858", JSON.stringify(fav)), [fav]);
 
-  // export settings
+  /* export */
   const [exportScale, setExportScale] = useState(2);
 
-  // computed
+  /* computed */
   const SPREAD_W = boards * BW;
   const SPREAD_H = BH;
 
-  /** Drop / choose files */
+  /* ------------- file load ------------- */
   const addFiles = async (fileList) => {
-    const read = (f) =>
-      new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result);
-        r.onerror = rej;
-        r.readAsDataURL(f);
-      });
-
+    const read = (f) => new Promise((res, rej) => {
+      const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f);
+    });
     const out = [];
     for (const f of fileList) {
       if (!f.type?.startsWith("image/")) continue;
       const src = await read(f);
       out.push({
-        id: uid(),
-        src,
-        // start temp size ~ quarter board width
+        id: uid(), src,
         w: Math.floor(BW * (0.28 + Math.random() * 0.18)),
         h: Math.floor(BH * (0.28 + Math.random() * 0.18)),
         x: Math.floor(Math.random() * (SPREAD_W - BW)),
@@ -248,201 +232,200 @@ export default function App() {
     setImages((p) => [...p, ...out]);
   };
 
-  /** Keep everything within bounds */
-  const fixBounds = () => {
-    setImages((prev) =>
-      prev.map((n) => ({
-        ...n,
-        x: clamp(n.x, 0, SPREAD_W - n.w),
-        y: clamp(n.y, 0, SPREAD_H - n.h),
-        w: Math.min(n.w, SPREAD_W),
-        h: Math.min(n.h, SPREAD_H),
-      }))
-    );
+  /* ------------- bounds pack + random non-overlap ------------- */
+  const noOverlapPlace = (arr) => {
+    // place items into a coarse grid to avoid heavy collisions
+    const cell = Math.max(16, Math.floor(Math.min(BW, BH) / 12));
+    const occupied = [];
+    const fits = (x,y,w,h) => !occupied.some(o => !(x + w <= o.x || o.x + o.w <= x || y + h <= o.y || o.y + o.h <= y));
+    const take = (x,y,w,h) => occupied.push({x,y,w,h});
+
+    const res = [];
+    for (const n of arr) {
+      const w = Math.min(n.w, BW - spacing * 2), h = Math.min(n.h, BH - spacing * 2);
+      let attempts = 0, placed = false;
+      while (attempts++ < 2000 && !placed) {
+        const b = Math.floor(Math.random()*boards);
+        const px = b*BW + spacing + Math.floor(Math.random() * ((BW - w - spacing*2) / cell)) * cell;
+        const py = spacing + Math.floor(Math.random() * ((BH - h - spacing*2) / cell)) * cell;
+        if (fits(px, py, w + spacing, h + spacing)) {
+          take(px, py, w + spacing, h + spacing);
+          res.push({ ...n, x: px, y: py, w, h });
+          placed = true;
+        }
+      }
+      if (!placed) { // fallback: clamp
+        const b = 0;
+        res.push({
+          ...n,
+          x: clamp(n.x, b*BW, (b+1)*BW - w),
+          y: clamp(n.y, 0, BH - h),
+          w, h
+        });
+      }
+    }
+    return res;
   };
 
-  /** Simple non-overlap pack with spacing */
+  const randomise = () => setImages(prev => noOverlapPlace(shuffle(prev)));
+
   const pack = () => {
+    // simple top-left skyline with spacing
     const placed = [];
-    const res = [...images].sort((a, b) => b.w * b.h - a.w * a.h).map((n) => {
-      let ok = false, x=0,y=0;
-      const step = Math.max(8, spacing);
-      for (y = 0; y <= SPREAD_H - n.h && !ok; y += step) {
-        for (x = 0; x <= SPREAD_W - n.w && !ok; x += step) {
-          const cand = { ...n, x, y };
-          if (
-            !placed.some((p) =>
-              !(
-                cand.x + cand.w + spacing <= p.x ||
+    const sorted = [...images].sort((a,b)=>b.w*b.h - a.w*a.h);
+    const res = sorted.map(n=>{
+      let placedFlag = false;
+      for (let by = 0; by <= BH - n.h && !placedFlag; by += Math.max(8, spacing)) {
+        for (let bxBoard = 0; bxBoard < boards && !placedFlag; bxBoard++) {
+          for (let bx = bxBoard*BW + spacing; bx <= (bxBoard+1)*BW - n.w - spacing && !placedFlag; bx += Math.max(8, spacing)) {
+            const cand = { ...n, x: bx, y: by };
+            const collide = placed.some(p =>
+              !(cand.x + cand.w + spacing <= p.x ||
                 p.x + p.w + spacing <= cand.x ||
                 cand.y + cand.h + spacing <= p.y ||
-                p.y + p.h + spacing <= cand.y
-              )
-            )
-          ) {
-            ok = true;
-            placed.push(cand);
-            return cand;
+                p.y + p.h + spacing <= cand.y));
+            if (!collide) { placedFlag = true; placed.push(cand); return cand; }
           }
         }
       }
       const keep = { ...n, x: clamp(n.x, 0, SPREAD_W - n.w), y: clamp(n.y, 0, SPREAD_H - n.h) };
-      placed.push(keep);
-      return keep;
+      placed.push(keep); return keep;
     });
     setImages(res);
   };
 
-  /** Randomise grid across all boards */
-  const randomise = () => {
-    const res = images.map((n, idx) => {
-      const col = idx % boards;
-      const x = Math.floor(col * BW + spacing + Math.random() * (BW - n.w - spacing * 2));
-      const y = Math.floor(spacing + Math.random() * (BH - n.h - spacing * 2));
-      return { ...n, x, y };
-    });
-    setImages(res);
-  };
-
-  /** Editorial: columnar masonry that spreads across all boards (no overlap) */
-  const editorial = (seamless = false) => {
+  const editorial = (seamless=false) => {
     const colsPerBoard = 3;
     const totalCols = colsPerBoard * boards;
-    const colW = (BW - spacing * (colsPerBoard + 1)) / colsPerBoard;
     const gutters = spacing;
-
+    const colW = (BW - gutters * (colsPerBoard + 1)) / colsPerBoard;
+    const order = shuffle(images);
     const heights = new Array(totalCols).fill(gutters);
-    const res = images.map((n, i) => {
+
+    const out = order.map((n, i) => {
       const colIdx = i % totalCols;
       const boardIdx = Math.floor(colIdx / colsPerBoard);
-      const withinBoardCol = colIdx % colsPerBoard;
-
-      const x = boardIdx * BW + gutters + withinBoardCol * (colW + gutters);
-      const targetW = colW;
-      // keep aspect ratio by adjusting height (no distortion)
-      const aspect = n._natW && n._natH ? n._natW / n._natH : 1.5;
-      const targetH = Math.max(60, Math.round(targetW / aspect)); // “cover” feel will be done at draw
-
+      const within = colIdx % colsPerBoard;
+      const x = boardIdx*BW + gutters + within*(colW+gutters);
+      const ar = n._natW && n._natH ? n._natW/n._natH : 1.5;
+      const w = colW, h = Math.max(60, Math.round(w / ar));
       const y = heights[colIdx];
-      heights[colIdx] += targetH + gutters * (seamless ? 0 : 1);
-
-      return { ...n, x, y, w: targetW, h: targetH };
+      heights[colIdx] += h + (seamless ? 0 : gutters);
+      return { ...n, x, y, w, h };
     });
-    setImages(res);
+    setImages(out);
   };
 
-  /** Snap to bottom of each board (keeps x) */
   const snapBottom = () => {
-    setImages((prev) =>
-      prev.map((n) => {
-        const boardIdx = Math.floor(n.x / BW);
-        const xWithin = n.x - boardIdx * BW;
-        return { ...n, x: boardIdx * BW + xWithin, y: BH - n.h - spacing };
-      })
-    );
+    setImages(prev => prev.map(n=>{
+      const b = Math.floor(n.x/BW);
+      const xw = n.x - b*BW;
+      return { ...n, x: b*BW + clamp(xw, spacing, BW - n.w - spacing), y: BH - n.h - spacing };
+    }));
   };
 
-  /** Distribute boards – ensure all boards get roughly equal count */
   const distributeBoards = () => {
     if (!images.length) return;
     const per = Math.ceil(images.length / boards);
-    const sorted = [...images];
+    const order = shuffle(images);
     const res = [];
-    for (let b = 0; b < boards; b++) {
-      const start = b * per;
-      const slice = sorted.slice(start, start + per);
-      const left = b * BW + spacing;
+    for (let b=0;b<boards;b++){
+      const slice = order.slice(b*per, b*per + per);
       let y = spacing;
       for (const n of slice) {
-        const w = Math.min(Math.max(BW * 0.28, n.w || BW * 0.32), BW - spacing * 2);
-        const h = Math.min(Math.max(BH * 0.2, n.h || BH * 0.24), BH - spacing * 2);
+        const w = clamp(n.w || BW*0.32, BW*0.22, BW - spacing*2);
+        const h = clamp(n.h || BH*0.24, BH*0.18, BH - spacing*2);
         if (y + h + spacing > BH) y = spacing;
-        res.push({
-          ...n,
-          x: left + Math.random() * (BW - w - spacing * 2),
-          y,
-          w,
-          h,
-        });
+        const x = b*BW + spacing + Math.random()*(BW - w - spacing*2);
+        res.push({ ...n, x, y, w, h });
         y += h + spacing;
       }
     }
     setImages(res);
   };
 
-  /** Shuffle Z order helpers */
-  const sendToBack = () => {
-    if (!selected) return;
-    setImages((prev) => {
-      const idx = prev.findIndex((n) => n.id === selected);
-      if (idx < 0) return prev;
-      const copy = [...prev];
-      const [it] = copy.splice(idx, 1);
-      copy.unshift(it);
-      return copy;
-    });
-  };
-  const bringToFront = () => {
-    if (!selected) return;
-    setImages((prev) => {
-      const idx = prev.findIndex((n) => n.id === selected);
-      if (idx < 0) return prev;
-      const copy = [...prev];
-      const [it] = copy.splice(idx, 1);
-      copy.push(it);
-      return copy;
-    });
-  };
-  const bringForward = () => {
-    if (!selected) return;
-    setImages((prev) => {
-      const idx = prev.findIndex((n) => n.id === selected);
-      if (idx < 0 || idx === prev.length - 1) return prev;
-      const copy = [...prev];
-      [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
-      return copy;
-    });
-  };
-  const sendBackward = () => {
-    if (!selected) return;
-    setImages((prev) => {
-      const idx = prev.findIndex((n) => n.id === selected);
-      if (idx <= 0) return prev;
-      const copy = [...prev];
-      [copy[idx], copy[idx - 1]] = [copy[idx - 1], copy[idx]];
-      return copy;
-    });
+  const fixBounds = () => {
+    setImages(prev=>prev.map(n=>({
+      ...n,
+      x: clamp(n.x, 0, SPREAD_W - n.w),
+      y: clamp(n.y, 0, SPREAD_H - n.h),
+      w: Math.min(n.w, BW - spacing*2),
+      h: Math.min(n.h, BH - spacing*2),
+    })));
   };
 
-  /** Reset layout positions but keep images */
   const resetLayout = () => {
-    setImages((prev) =>
-      prev.map((n, i) => ({
-        ...n,
-        x: (i % boards) * BW + spacing,
-        y: spacing,
-        w: Math.min(Math.max(BW * 0.32, n.w || BW * 0.32), BW - spacing * 2),
-        h: Math.min(Math.max(BH * 0.24, n.h || BH * 0.24), BH - spacing * 2),
-      }))
-    );
+    setImages(prev => prev.map((n,i)=>({
+      ...n,
+      x: (i%boards)*BW + spacing,
+      y: spacing,
+      w: clamp(n.w || BW*0.32, BW*0.24, BW - spacing*2),
+      h: clamp(n.h || BH*0.24, BH*0.18, BH - spacing*2),
+    })));
   };
 
-  /** Keyboard shortcuts */
-  useEffect(() => {
-    const h = (e) => {
-      if (e.key.toLowerCase() === "r") randomise();
-      if (e.key.toLowerCase() === "p") pack();
-      if ((e.key === "Backspace" || e.key === "Delete") && selected) {
-        setImages((prev) => prev.filter((n) => n.id !== selected));
-        setSelected(null);
+  /* z order */
+  const sendToBack = () => { if(!selected) return;
+    setImages(prev => { const i=prev.findIndex(n=>n.id===selected); if(i<0)return prev; const a=[...prev]; const [it]=a.splice(i,1); a.unshift(it); return a; });};
+  const bringToFront = () => { if(!selected) return;
+    setImages(prev => { const i=prev.findIndex(n=>n.id===selected); if(i<0)return prev; const a=[...prev]; const [it]=a.splice(i,1); a.push(it); return a; });};
+  const bringForward = () => { if(!selected) return;
+    setImages(prev => { const i=prev.findIndex(n=>n.id===selected); if(i<0||i===prev.length-1)return prev; const a=[...prev]; [a[i],a[i+1]]=[a[i+1],a[i]]; return a; });};
+  const sendBackward = () => { if(!selected) return;
+    setImages(prev => { const i=prev.findIndex(n=>n.id===selected); if(i<=0)return prev; const a=[...prev]; [a[i],a[i-1]]=[a[i-1],a[i]]; return a; });};
+
+  /* keyboard shortcuts */
+  useEffect(()=>{
+    const h=(e)=>{
+      if (e.key.toLowerCase()==="r") randomise();
+      if (e.key.toLowerCase()==="p") pack();
+      if ((e.key==="Backspace"||e.key==="Delete") && selected){
+        setImages(prev=>prev.filter(n=>n.id!==selected)); setSelected(null);
       }
     };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected, images, boards, BW, BH, spacing]);
+    window.addEventListener("keydown", h); return ()=>window.removeEventListener("keydown", h);
+  },[selected, images, boards, BW, BH, spacing]);
 
-  /** Crop operations per board for export (with coverCrop) */
+  /* ---------------- overlay shapes ---------------- */
+  const regenOverlay = (mode="bars") => {
+    // produce across all boards; seed toggling yields new randomness
+    const shapes = [];
+    const perBoard = 18;
+    for (let b=0;b<boards;b++){
+      for (let i=0;i<perBoard;i++){
+        const x = b*BW + Math.random()*BW;
+        const y = Math.random()*BH;
+        if (mode==="bars") {
+          const w = 6 + Math.random()*14;
+          const h = 60 + Math.random()* (BH*0.35);
+          shapes.push({ id: uid(), type:"bar", board:b, x, y, w, h });
+        } else if (mode==="rects") {
+          const w = 40 + Math.random()*120;
+          const h = 20 + Math.random()*90;
+          shapes.push({ id: uid(), type:"rect", board:b, x, y, w, h });
+        } else if (mode==="circles") {
+          const r = 10 + Math.random()*40;
+          shapes.push({ id: uid(), type:"circle", board:b, x, y, r });
+        } else if (mode==="plus") {
+          const s = 10 + Math.random()*36;
+          shapes.push({ id: uid(), type:"plus", board:b, x, y, s });
+        }
+      }
+    }
+    setOverlayShapes(shapes);
+    setOverlaySeed(s=>s+1);
+  };
+  const randomiseOverlay = () => {
+    if (!overlayShapes.length) return regenOverlay("bars");
+    setOverlayShapes(shuffle(overlayShapes).map(s=>({
+      ...s,
+      x: (Math.floor(s.x / BW))*BW + Math.random()*BW,
+      y: Math.random()*BH
+    })));
+    setOverlaySeed(s=>s+1);
+  };
+
+  /* ---------------- export (no distortion) ---------------- */
   function buildOps(boardIndex) {
     const boardX = boardIndex * BW;
     const ops = [];
@@ -450,105 +433,78 @@ export default function App() {
       const hit = intersect(n.x, n.y, n.w, n.h, boardX, 0, BW, BH);
       if (!hit) continue;
       if (!n._natW || !n._natH) continue;
-
-      // where this hit falls inside the frame of n
-      const fx = hit.x - n.x;
-      const fy = hit.y - n.y;
-
-      // compute source crop using coverCrop
+      const fx = hit.x - n.x, fy = hit.y - n.y;
       const cover = coverCrop(n._natW, n._natH, n.w, n.h, fx, fy, hit.w, hit.h);
-
-      ops.push({
-        img: n,
-        src: cover,
-        dst: {
-          dx: hit.x - boardX,
-          dy: hit.y,
-          dw: hit.w,
-          dh: hit.h,
-        },
-      });
+      ops.push({ img:n, src:cover, dst:{ dx: hit.x - boardX, dy: hit.y, dw: hit.w, dh: hit.h }});
     }
     return ops;
   }
 
-  /** Export one board to canvas -> dataURL */
-  async function renderBoard(boardIndex, type = "image/png", quality = 0.95, scale = exportScale) {
+  async function renderBoard(boardIndex, type="image/png", quality=0.95, scale=exportScale) {
     const canvas = document.createElement("canvas");
-    canvas.width = BW * scale;
-    canvas.height = BH * scale;
+    canvas.width = BW * scale; canvas.height = BH * scale;
     const ctx = canvas.getContext("2d");
-
     // background
-    ctx.fillStyle = bgColour || "#000";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = bgColour || "#000"; ctx.fillRect(0,0,canvas.width,canvas.height);
 
-    // draw ops
+    // draw images
     const ops = buildOps(boardIndex);
     for (const op of ops) {
-      const el = new Image();
-      el.crossOrigin = "anonymous";
-      await new Promise((res) => { el.onload = res; el.src = op.img.src; });
-
-      ctx.drawImage(
-        el,
-        op.src.sx, op.src.sy, op.src.sw, op.src.sh,
-        Math.round(op.dst.dx * scale),
-        Math.round(op.dst.dy * scale),
-        Math.round(op.dst.dw * scale),
-        Math.round(op.dst.dh * scale)
-      );
+      const el = new Image(); el.crossOrigin="anonymous";
+      await new Promise(res=>{ el.onload=res; el.src=op.img.src; });
+      ctx.drawImage(el, op.src.sx, op.src.sy, op.src.sw, op.src.sh,
+        Math.round(op.dst.dx*scale), Math.round(op.dst.dy*scale),
+        Math.round(op.dst.dw*scale), Math.round(op.dst.dh*scale));
     }
+
+    // overlay shapes (preview-only toggle respected; if visible, include)
+    if (overlayVisible && overlayShapes.length) {
+      ctx.globalAlpha = overlayOpacity;
+      for (const s of overlayShapes) {
+        // only shapes that fall on this board
+        const bx = boardIndex * BW;
+        const ax = s.x - bx;
+        if (ax < -BW || ax > BW) continue;
+        if (s.type==="bar" || s.type==="rect") {
+          ctx.fillStyle = overlayColourA;
+          const x = (s.x - bx) * scale, y = s.y * scale;
+          const w = (s.w||0) * scale, h = (s.h||0) * scale;
+          ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+        } else if (s.type==="circle") {
+          ctx.fillStyle = overlayColourB;
+          ctx.beginPath();
+          ctx.arc(Math.round((s.x - bx)*scale), Math.round(s.y*scale), (s.r||0)*scale, 0, Math.PI*2);
+          ctx.fill();
+        } else if (s.type==="plus") {
+          ctx.fillStyle = overlayColourA;
+          const sz = (s.s||18)*scale;
+          const cx = (s.x - bx)*scale, cy = s.y*scale;
+          ctx.fillRect(Math.round(cx - sz*0.15), Math.round(cy - sz*0.5), Math.round(sz*0.3), Math.round(sz));
+          ctx.fillRect(Math.round(cx - sz*0.5), Math.round(cy - sz*0.15), Math.round(sz), Math.round(sz*0.3));
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
     const ext = type === "image/jpeg" ? "jpg" : "png";
-    const name = `858 art club_${boardIndex + 1}.${ext}`;
+    const name = `858 art club_${boardIndex+1}.${ext}`;
     const dataUrl = canvas.toDataURL(type, quality);
     return { name, dataUrl };
   }
-
-  /** Export buttons */
   const downloadURL = (dataUrl, filename) => {
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+    const a = document.createElement("a"); a.href = dataUrl; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
   };
-
-  const exportPNG = async () => {
-    for (let i = 0; i < boards; i++) {
-      const { name, dataUrl } = await renderBoard(i, "image/png", 0.95);
-      downloadURL(dataUrl, name);
-    }
-  };
-  const exportJPG = async () => {
-    for (let i = 0; i < boards; i++) {
-      const { name, dataUrl } = await renderBoard(i, "image/jpeg", 0.92);
-      downloadURL(dataUrl, name);
-    }
-  };
+  const exportPNG = async () => { for (let i=0;i<boards;i++){ const {name,dataUrl}=await renderBoard(i,"image/png",0.95); downloadURL(dataUrl,name);} };
+  const exportJPG = async () => { for (let i=0;i<boards;i++){ const {name,dataUrl}=await renderBoard(i,"image/jpeg",0.92); downloadURL(dataUrl,name);} };
   const exportZIP = async () => {
     const zip = new JSZip();
-    for (let i = 0; i < boards; i++) {
-      const png = await renderBoard(i, "image/png", 0.95);
-      const data = png.dataUrl.split(",")[1];
-      zip.file(png.name, data, { base64: true });
-    }
-    const blob = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(blob);
-    downloadURL(url, "858 art club.zip");
-    URL.revokeObjectURL(url);
+    for (let i=0;i<boards;i++){ const {name,dataUrl}=await renderBoard(i,"image/png",0.95); zip.file(name, dataUrl.split(",")[1], {base64:true}); }
+    const blob = await zip.generateAsync({type:"blob"}); const url=URL.createObjectURL(blob);
+    downloadURL(url, "858 art club.zip"); URL.revokeObjectURL(url);
   };
 
-  /** Preset sizes */
-  const PRESETS = [
-    { name: "1080 x 1320 (Portrait)", w: 1080, h: 1320 },
-    { name: "1320 x 1080 (Landscape)", w: 1320, h: 1080 },
-    { name: "1080 x 1080 (Square)", w: 1080, h: 1080 },
-    { name: "1440 x 1080 (Widescreen)", w: 1440, h: 1080 },
-  ];
-
-  /** UI */
+  /* ---------------- UI computed ---------------- */
   const spreadStyle = {
     position: "relative",
     width: SPREAD_W * zoom,
@@ -557,77 +513,72 @@ export default function App() {
     transformOrigin: "top left",
   };
 
+  /* ---------------- render ---------------- */
   return (
     <div
       className="app"
-      style={{
-        background: "#000",
-        color: "#d6ffe0",
-        minHeight: "100vh",
-        display: "flex",
-        flexDirection: "column",
-      }}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
+      style={{ background:"#000", color:"#d6ffe0", minHeight:"100vh", display:"flex", flexDirection:"column" }}
+      onDragOver={(e)=>e.preventDefault()}
+      onDrop={(e)=>{e.preventDefault(); addFiles(e.dataTransfer.files);}}
     >
-      {/* Spread */}
-      <div
-        style={{
-          flex: "1 1 auto",
-          overflow: "auto",
-          padding: 12,
-          borderBottom: "1px solid #0f3",
-        }}
-        onClick={(e) => { if (e.currentTarget === e.target) setSelected(null); }}
-      >
+      {/* SPREAD */}
+      <div style={{ flex:"1 1 auto", overflow:"auto", padding:12, borderBottom:"1px solid #0f3" }}
+           onClick={(e)=>{ if (e.currentTarget===e.target) setSelected(null); }}>
         <div style={spreadStyle}>
-          {/* Board guides */}
-          {showGuides &&
-            [...Array(boards)].map((_, i) => (
-              <div key={i}
-                style={{
-                  position: "absolute",
-                  left: i * BW, top: 0, width: BW, height: BH,
-                  outline: `1px solid ${guideColour}`,
-                  opacity: guideAlpha,
-                }}
-              >
-                <span style={BOARD_LABEL_STYLE}>slide {i + 1}</span>
-              </div>
-            ))}
+          {/* guides */}
+          {showGuides && [...Array(boards)].map((_,i)=>(
+            <div key={i} style={{
+              position:"absolute", left:i*BW, top:0, width:BW, height:BH,
+              outline:`1px solid ${guideColour}`, opacity:guideAlpha,
+            }}>
+              <span style={BOARD_LABEL_STYLE}>slide {i+1}</span>
+            </div>
+          ))}
 
-          {/* Items */}
-          {images.map((n) => (
-            <Item
-              key={n.id}
-              node={n}
-              selected={selected === n.id}
-              onSelect={(id) => setSelected(id)}
-              onChange={(next) => setImages((prev) => prev.map((x) => (x.id === n.id ? next : x)))}
-            />
+          {/* overlay shapes (preview) */}
+          {overlayVisible && overlayShapes.map(s=>{
+            const styleBase = { position:"absolute", opacity: overlayOpacity, pointerEvents:"none" };
+            if (s.type==="bar"||s.type==="rect") {
+              return <div key={s.id} style={{...styleBase, left:s.x, top:s.y, width:s.w, height:s.h, background: overlayColourA}} />;
+            }
+            if (s.type==="circle") {
+              const d = (s.r||0)*2;
+              return <div key={s.id} style={{...styleBase, left:s.x - s.r, top:s.y - s.r, width:d, height:d, borderRadius:"50%", background: overlayColourB}} />;
+            }
+            if (s.type==="plus") {
+              const sz = s.s||18;
+              return (
+                <div key={s.id} style={{...styleBase, left:s.x - sz/2, top:s.y - sz/2, width:sz, height:sz}}>
+                  <div style={{position:"absolute", left:"42%", top:0, width:"16%", height:"100%", background: overlayColourA}}/>
+                  <div style={{position:"absolute", top:"42%", left:0, height:"16%", width:"100%", background: overlayColourA}}/>
+                </div>
+              );
+            }
+            return null;
+          })}
+
+          {/* items */}
+          {images.map(n=>(
+            <Item key={n.id} node={n} selected={selected===n.id}
+                  onSelect={(id)=>setSelected(id)}
+                  onChange={(next)=>setImages(prev=>prev.map(x=>x.id===n.id?next:x))}/>
           ))}
         </div>
       </div>
 
-      {/* Controls */}
+      {/* CONTROLS */}
       <div
         style={{
-          background: "#0b0b0b",
-          borderTop: "1px solid #0f3",
-          padding: "10px 12px",
-          display: "grid",
-          gap: 8,
-          gridTemplateColumns: "repeat(12, minmax(0,1fr))",
-          alignItems: "center",
-          fontSize: 13,
+          background:"#0b0b0b", borderTop:"1px solid #0f3", padding:"10px 12px",
+          display:"grid", gap:8, gridTemplateColumns:"repeat(12,minmax(0,1fr))", alignItems:"center", fontSize:13
         }}
       >
-        {/* Layout group */}
-        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {/* Layout */}
+        <div style={{ gridColumn:"span 5", display:"flex", gap:6, flexWrap:"wrap" }}>
           <button onClick={randomise}>Randomise</button>
           <button onClick={pack}>Pack</button>
-          <button onClick={() => editorial(false)}>Editorial (spaced)</button>
-          <button onClick={() => editorial(true)}>Editorial (seamless)</button>
+          <button onClick={()=>editorial(false)}>Editorial (spaced)</button>
+          <button onClick={()=>editorial(true)}>Editorial (seamless)</button>
           <button onClick={snapBottom}>Snap bottom</button>
           <button onClick={distributeBoards}>Distribute boards</button>
           <button onClick={resetLayout}>Reset layout</button>
@@ -635,115 +586,93 @@ export default function App() {
         </div>
 
         {/* Geometry */}
-        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <label>Boards (max {MAX_BOARDS})</label>
+        <div style={{ gridColumn:"span 4", display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+          <label>Boards</label>
           <input type="number" min={1} max={MAX_BOARDS} value={boards}
-                 onChange={(e) => setBoards(clamp(parseInt(e.target.value||"1",10),1,MAX_BOARDS))} style={{ width: 64 }} />
-
-          <select
-            value={`${BW}x${BH}`}
-            onChange={(e) => {
-              const [w, h] = e.target.value.split("x").map((n) => parseInt(n, 10));
-              setBW(w); setBH(h);
-              fixBounds();
-            }}
-          >
-            {PRESETS.map((p) => (
-              <option key={p.name} value={`${p.w}x${p.h}`}>{p.name}</option>
-            ))}
+                 onChange={(e)=>setBoards(clamp(parseInt(e.target.value||"1",10),1,MAX_BOARDS))}
+                 style={{ width:64 }} />
+          <select value={`${BW}x${BH}`} onChange={(e)=>{ const [w,h]=e.target.value.split("x").map(n=>parseInt(n,10)); setBW(w); setBH(h); fixBounds(); }}>
+            {PRESETS.map(p=><option key={p.name} value={`${p.w}x${p.h}`}>{p.name}</option>)}
           </select>
-
-          <label>W</label>
-          <input type="number" value={BW} onChange={(e)=>setBW(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{ width: 84 }} />
-          <label>H</label>
-          <input type="number" value={BH} onChange={(e)=>setBH(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{ width: 84 }} />
-          <label>Spacing</label>
-          <input type="number" value={spacing} onChange={(e)=>setSpacing(clamp(parseInt(e.target.value||"0",10),0,400))} style={{ width: 64 }} />
+          <label>W</label><input type="number" value={BW} onChange={(e)=>setBW(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{width:84}}/>
+          <label>H</label><input type="number" value={BH} onChange={(e)=>setBH(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{width:84}}/>
+          <label>Spacing</label><input type="number" value={spacing} onChange={(e)=>setSpacing(clamp(parseInt(e.target.value||"0",10),0,400))} style={{width:64}}/>
         </div>
 
-        {/* Export */}
-        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <label>Export scale</label>
-          <input type="number" min={1} max={4} value={exportScale}
-                 onChange={(e)=>setExportScale(clamp(parseInt(e.target.value||"1",10),1,4))}
-                 style={{ width: 64 }} />
-          <label>Background</label>
-          <input type="color" value={bgColour} onChange={(e)=>setBgColour(e.target.value)} />
-          {/* colour favourites */}
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {colours.map((c, i) => (
-              <button
-                key={i}
-                title="Click to apply; Alt+Click to remove"
-                onClick={(e) => {
-                  if (e.altKey) {
-                    const copy = [...colours];
-                    copy.splice(i, 1);
-                    setColours(copy);
-                  } else {
-                    setBgColour(c);
-                  }
-                }}
-                style={{
-                  width: 18, height: 18, borderRadius: 4, border: "1px solid #0f3", background: c
-                }}
-              />
-            ))}
-            <button
-              onClick={() => setColours((p) => Array.from(new Set([...p, bgColour])).slice(0, 12))}
-              title="★ Save current as favourite"
-            >★ Save</button>
-          </div>
-
+        {/* Export / BG */}
+        <div style={{ gridColumn:"span 3", display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+          <label>Export</label>
+          <input type="number" min={1} max={4} value={exportScale} onChange={(e)=>setExportScale(clamp(parseInt(e.target.value||"1",10),1,4))} style={{width:54}}/>
           <button onClick={exportPNG}>Export PNG</button>
           <button onClick={exportJPG}>Export JPG</button>
           <button onClick={exportZIP}>Export ZIP</button>
         </div>
 
-        {/* Z / Files row 2 */}
-        <div style={{ gridColumn: "span 12", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ gridColumn:"span 12", display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" }}>
           <label>Preview zoom</label>
-          <input type="range" min={0.2} max={2.0} step={0.05} value={zoom}
-                 onChange={(e)=>setZoom(parseFloat(e.target.value))} />
-          <label style={{ marginLeft: 12 }}>Guides colour</label>
+          <input type="range" min={0.2} max={2} step={0.05} value={zoom} onChange={(e)=>setZoom(parseFloat(e.target.value))}/>
+          <label>Guides colour</label>
           <input type="color" value={guideColour} onChange={(e)=>setGuideColour(e.target.value)} />
           <label>Guides opacity</label>
-          <input type="range" min={0} max={1} step={0.05} value={guideAlpha}
-                 onChange={(e)=>setGuideAlpha(parseFloat(e.target.value))} />
-          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={showGuides} onChange={(e)=>setShowGuides(e.target.checked)} />
-            Show guides
+          <input type="range" min={0} max={1} step={0.05} value={guideAlpha} onChange={(e)=>setGuideAlpha(parseFloat(e.target.value))}/>
+          <label style={{display:"flex",alignItems:"center",gap:6}}>
+            <input type="checkbox" checked={showGuides} onChange={(e)=>setShowGuides(e.target.checked)} /> Show guides
           </label>
 
-          <span style={{ marginLeft: "auto", opacity: 0.8 }}>
-            Count: <strong>{images.length}</strong>
-          </span>
+          <span style={{ marginLeft:"auto", opacity:0.85 }}>Count: <strong>{images.length}</strong></span>
 
           <button onClick={sendToBack}>Send to Back</button>
           <button onClick={sendBackward}>Send Backward</button>
           <button onClick={bringForward}>Bring Forward</button>
           <button onClick={bringToFront}>Bring to Front</button>
 
-          <label className="file-btn" style={{ marginLeft: 12 }}>
+          <label className="file-btn" style={{ marginLeft:12 }}>
             Add images
-            <input type="file" multiple accept="image/*"
-                   onChange={(e)=> e.target.files && addFiles(e.target.files)}
-                   style={{ display: "none" }} />
+            <input type="file" multiple accept="image/*" onChange={(e)=>e.target.files && addFiles(e.target.files)} style={{display:"none"}} />
           </label>
+        </div>
+
+        {/* Background + favourites */}
+        <div style={{ gridColumn:"span 12", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginTop:4 }}>
+          <label>Background</label>
+          <input type="color" value={bgColour} onChange={(e)=>setBgColour(e.target.value)}/>
+          <div style={{ display:"flex", gap:6, alignItems:"center" }}>
+            {fav.map((c,i)=>(
+              <button key={i} title="Click apply • Alt+click remove"
+                onClick={(e)=>{ if(e.altKey){ const a=[...fav]; a.splice(i,1); setFav(a);} else { setBgColour(c);} }}
+                style={{ width:18, height:18, borderRadius:4, border:"1px solid #1aff7a", background:c }} />
+            ))}
+            <button onClick={()=>setFav(p=>Array.from(new Set([...p,bgColour])).slice(0,12))}>★ Save</button>
+          </div>
+        </div>
+
+        {/* Overlay controls */}
+        <div style={{ gridColumn:"span 12", display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginTop:2 }}>
+          <button onClick={()=>setOverlayVisible(v=>!v)}>{overlayVisible ? "Hide Overlay" : "Show Overlay"}</button>
+          <button onClick={()=>regenOverlay("bars")}>Bars</button>
+          <button onClick={()=>regenOverlay("rects")}>Rects</button>
+          <button onClick={()=>regenOverlay("circles")}>Circles</button>
+          <button onClick={()=>regenOverlay("plus")}>Plus</button>
+          <button onClick={randomiseOverlay}>Randomise overlay</button>
+          <label>Opacity</label>
+          <input type="range" min={0} max={1} step={0.05} value={overlayOpacity} onChange={(e)=>setOverlayOpacity(parseFloat(e.target.value))}/>
+          <label>Colour A</label><input type="color" value={overlayColourA} onChange={(e)=>setOverlayColourA(e.target.value)}/>
+          <label>Colour B</label><input type="color" value={overlayColourB} onChange={(e)=>setOverlayColourB(e.target.value)}/>
         </div>
       </div>
 
-      {/* tiny style reset for buttons/inputs in dark UI */}
+      {/* Dark UI styling with readable inputs */}
       <style>{`
         .app button {
           background:#0e0e0e;border:1px solid #1aff7a;color:#d6ffe0;
-          padding:6px 10px;border-radius:8px;cursor:pointer
+          padding:6px 10px;border-radius:8px;cursor:pointer; line-height:1
         }
         .app button:hover{background:#122;box-shadow:0 0 0 1px #1aff7a inset}
         .app input, .app select {
           background:#060606;border:1px solid #1aff7a;color:#d6ffe0;border-radius:6px;
           padding:6px 8px; outline:none
         }
+        .app option { color:#0b0b0b; }
         .file-btn{position:relative; overflow:hidden}
         .file-btn input{position:absolute; inset:0; opacity:0; cursor:pointer}
       `}</style>
