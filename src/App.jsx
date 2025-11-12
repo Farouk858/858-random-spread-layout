@@ -3,10 +3,11 @@ import JSZip from "jszip";
 
 /**
  * 858 Random Spread Layout — Pure React
- * Now includes:
- * - Rectangle layer controls (colour pickers, opacity, size %, density)
- * - Preview zoom so the canvas shows bigger
- * - All previous features kept
+ * - Preview auto-fits 100% of available viewport height (toolbars measured, canvas scales to fit)
+ * - Auto Spread: flows items L→R, top→bottom; auto-adds boards (up to MAX) to avoid overlaps
+ * - Pack / Pack Bottom use the same auto-grow placement core
+ * - Background rectangles with colour pickers & ranges
+ * - Overlay image, ZIP export, editorial 3-up first page, shuffle, z-order, presets
  */
 
 const MAX_BOARDS = 20;
@@ -34,7 +35,6 @@ function rectsOverlapWithMargin(a, b, m) {
   );
 }
 
-// cover-fit crop mapping
 function coverSourceRect(imgW, imgH, nodeW, nodeH, nx, ny, nw, nh) {
   const scale = Math.max(nodeW / imgW, nodeH / imgH);
   const rw = imgW * scale;
@@ -192,41 +192,40 @@ export default function App() {
   const [boards, setBoards] = useState(6);
   const [showGrid, setShowGrid] = useState(true);
 
-  // layout + preview
-  const [spacing, setSpacing] = useState(24);
+  // preview scale
   const [previewScale, setPreviewScale] = useState(1);
-  const [zoom, setZoom] = useState(1.4); // 50%–200% multiplier of auto-fit (clamped to 1 later)
+  const topBarRef = useRef(null);
+  const secondBarRef = useRef(null);
   const wrapperRef = useRef(null);
 
-  // items
-  const [items, setItems] = useState([]); // {id, src, x,y,w,h, _img}
+  // layout + items
+  const [spacing, setSpacing] = useState(24);
+  const [items, setItems] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
 
   // export
   const [pixelRatio, setPixelRatio] = useState(2);
-  const [exportBg, setExportBg] = useState("#fff"); // blank means transparent PNG
+  const [exportBg, setExportBg] = useState("#fff");
 
-  // overlay image
+  // overlay
   const [overlayUrl, setOverlayUrl] = useState("");
   const [overlayOpacity, setOverlayOpacity] = useState(0.25);
 
-  // background rectangles layer
+  // rectangles layer
   const [showRects, setShowRects] = useState(false);
-  const [rects, setRects] = useState([]); // {x,y,w,h, color, opacity}
+  const [rects, setRects] = useState([]);
 
-  // rect controls
   const [rectCols, setRectCols] = useState(6);
   const [rectRows, setRectRows] = useState(5);
-  const [rectMinWpc, setRectMinWpc] = useState(6);  // % of boardW
+  const [rectMinWpc, setRectMinWpc] = useState(6);
   const [rectMaxWpc, setRectMaxWpc] = useState(22);
-  const [rectMinHpc, setRectMinHpc] = useState(4);  // % of boardH
+  const [rectMinHpc, setRectMinHpc] = useState(4);
   const [rectMaxHpc, setRectMaxHpc] = useState(18);
-  const [rectOpacityMin, setRectOpacityMin] = useState(6);  // %
-  const [rectOpacityMax, setRectOpacityMax] = useState(14); // %
+  const [rectOpacityMin, setRectOpacityMin] = useState(6);
+  const [rectOpacityMax, setRectOpacityMax] = useState(14);
   const [rectColorA, setRectColorA] = useState("#0f172a");
   const [rectColorB, setRectColorB] = useState("#111827");
 
-  // editorial state
   const [lastEditorialTight, setLastEditorialTight] = useState(false);
 
   const SPREAD_W = useMemo(() => boards * boardW, [boards, boardW]);
@@ -241,18 +240,20 @@ export default function App() {
     { label: "1350 × 1080 (IG)", w: 1350, h: 1080 },
   ];
 
-  // responsive fit (height and width) + zoom
+  // --- preview: fit 100% of available viewport height (after toolbars), never >1x (no blur)
   const fitPreview = useCallback(() => {
-    const el = wrapperRef.current;
-    if (!el) return;
-    const availW = el.clientWidth - 2;
-    const availH = window.innerHeight - el.getBoundingClientRect().top - 16;
-    const scaleW = availW / SPREAD_W;
+    const wEl = wrapperRef.current;
+    if (!wEl) return;
+    const topH = topBarRef.current?.getBoundingClientRect().height || 0;
+    const secH = secondBarRef.current?.getBoundingClientRect().height || 0;
+    const margins = 16; // bottom breathing room
+    const availH = Math.max(100, window.innerHeight - topH - secH - margins);
+    const availW = wEl.clientWidth - 2;
     const scaleH = availH / SPREAD_H;
-    const base = Math.min(scaleW, scaleH);
-    const scaled = clamp(base * clamp(zoom, 0.5, 2), 0.05, 1); // never exceed 1 to prevent blur
-    setPreviewScale(scaled > 0 && isFinite(scaled) ? scaled : 1);
-  }, [SPREAD_W, SPREAD_H, zoom]);
+    const scaleW = availW / SPREAD_W;
+    const scale = Math.min(1, Math.min(scaleH, scaleW));
+    setPreviewScale(isFinite(scale) && scale > 0 ? scale : 1);
+  }, [SPREAD_W, SPREAD_H]);
 
   useEffect(() => {
     fitPreview();
@@ -260,7 +261,7 @@ export default function App() {
     return () => window.removeEventListener("resize", fitPreview);
   }, [fitPreview]);
 
-  useEffect(() => { fitPreview(); }, [boardW, boardH, boards, zoom, fitPreview]);
+  useEffect(() => { fitPreview(); }, [boardW, boardH, boards, fitPreview]);
 
   // add images
   const onDropFiles = useCallback(async (fileList) => {
@@ -284,24 +285,84 @@ export default function App() {
     setItems((prev) => [...prev, ...newOnes]);
   }, [boardW]);
 
-  // randomise sizes only
+  // random sizes
   const randomiseSizes = useCallback(() => {
     setItems((prev) =>
       prev.map((n) => {
         const minW = boardW * 0.22, maxW = boardW * 0.65;
-        const w = clamp(Math.floor(minW + Math.random() * (maxW - minW)), 40, SPREAD_W);
+        const w = clamp(Math.floor(minW + Math.random() * (maxW - minW)), 40, Math.max(40, boardW));
         const h = Math.floor(w * (0.6 + Math.random() * 0.35));
         return { ...n, w, h };
       })
     );
-  }, [boardW, SPREAD_W]);
+  }, [boardW]);
 
-  // simple random positions
+  // ---------- AUTO-GROW PLACEMENT CORE ----------
+  /**
+   * Flow placement L→R, top→bottom. If a node won't fit in current spread,
+   * increments boards (up to MAX) and tries again. Returns placed items and new board count.
+   */
+  function flowPlaceAutoGrow(sourceItems, tight) {
+    const m = tight ? 0 : spacing;
+    let b = Math.max(1, boards);
+    const res = [];
+    let x = 0, y = 0, rowH = 0;
+
+    const tryPlaceAll = () => {
+      x = 0; y = 0; rowH = 0;
+      res.length = 0;
+      const SPW = b * boardW;
+
+      for (let i = 0; i < sourceItems.length; i++) {
+        const n = sourceItems[i];
+        let w = Math.min(n.w, Math.floor(boardW * 0.9));
+        let h = Math.min(n.h, Math.floor(boardH * 0.9));
+        if (w <= 0 || h <= 0) { w = 100; h = 80; }
+
+        if (x + w > SPW) { // new row
+          x = Math.floor(x / boardW) * boardW; // align to board boundary
+          y += rowH + m;
+          rowH = 0;
+        }
+        // push to next board if crossing boundary
+        const rightEdge = Math.ceil((x + 1) / boardW) * boardW;
+        if (x + w > rightEdge) {
+          x = rightEdge + (m ? m : 0);
+        }
+        if (x + w > SPW) {
+          // cannot fit in current boards
+          return false;
+        }
+        if (y + h > boardH) {
+          // new column (next board)
+          x = (Math.floor(x / boardW) + 1) * boardW;
+          y = 0;
+          rowH = 0;
+          if (x + w > SPW) return false;
+        }
+
+        res.push({ ...n, x, y, w, h });
+        x += w + m;
+        rowH = Math.max(rowH, h);
+      }
+      return true;
+    };
+
+    // first attempt with current boards then grow
+    let ok = tryPlaceAll();
+    while (!ok && b < MAX_BOARDS) {
+      b += 1;
+      ok = tryPlaceAll();
+    }
+    return { placed: ok ? res : sourceItems, usedBoards: b };
+  }
+
+  // random positions (non-auto-grow)
   const randomise = useCallback(() => {
     const placed = [];
     const tryPlace = (node) => {
       const minW = boardW * 0.22, maxW = boardW * 0.65;
-      const w = clamp(Math.floor(minW + Math.random() * (maxW - minW)), 40, SPREAD_W);
+      const w = clamp(Math.floor(minW + Math.random() * (maxW - minW)), 40, Math.max(40, boardW));
       const h = Math.floor(w * (0.6 + Math.random() * 0.35));
       for (let t = 0; t < 600; t++) {
         const x = Math.floor(Math.random() * Math.max(1, SPREAD_W - w));
@@ -316,38 +377,48 @@ export default function App() {
     setItems((prev) => prev.map(tryPlace));
   }, [SPREAD_W, SPREAD_H, spacing, boardW]);
 
-  // pack helpers
+  // pack using auto-grow scanning
   const packTop = useCallback(() => {
     const sorted = [...items].sort((a, b) => b.w * b.h - a.w * a.h);
-    const placed = [];
-    const step = Math.max(8, spacing);
-    const place = (n) => {
-      for (let y = 0; y <= SPREAD_H - n.h; y += step) {
-        for (let x = 0; x <= SPREAD_W - n.w; x += step) {
-          const cand = { ...n, x, y };
-          if (!placed.some((p) => rectsOverlapWithMargin(cand, p, spacing))) { placed.push(cand); return cand; }
-        }
-      }
-      placed.push(n); return n;
-    };
-    setItems(sorted.map(place));
-  }, [items, SPREAD_W, SPREAD_H, spacing]);
+    const { placed, usedBoards } = flowPlaceAutoGrow(sorted, false);
+    setBoards(usedBoards);
+    setItems(placed);
+  }, [items]);
 
   const packBottom = useCallback(() => {
+    // invert Y with a transform: place with flow then shift to bottom row-wise
     const sorted = [...items].sort((a, b) => b.w * b.h - a.w * a.h);
-    const placed = [];
-    const step = Math.max(8, spacing);
-    const place = (n) => {
-      for (let y = SPREAD_H - n.h; y >= 0; y -= step) {
-        for (let x = 0; x <= SPREAD_W - n.w; x += step) {
-          const cand = { ...n, x, y };
-          if (!placed.some((p) => rectsOverlapWithMargin(cand, p, spacing))) { placed.push(cand); return cand; }
+    const { placed, usedBoards } = flowPlaceAutoGrow(sorted, false);
+    // snap rows toward bottom per board
+    const byBoard = new Map();
+    placed.forEach(n => {
+      const bi = Math.floor(n.x / boardW);
+      if (!byBoard.has(bi)) byBoard.set(bi, []);
+      byBoard.get(bi).push(n);
+    });
+    byBoard.forEach((arr, bi) => {
+      // compute rows by y
+      arr.sort((a, b) => a.y - b.y);
+      let cursor = boardH;
+      let rowStart = 0;
+      while (rowStart < arr.length) {
+        let rowEnd = rowStart;
+        let rowH = arr[rowStart].h;
+        // same row if overlap in y-range approximately
+        while (rowEnd + 1 < arr.length && Math.abs(arr[rowEnd + 1].y - arr[rowStart].y) < 12) {
+          rowEnd++;
+          rowH = Math.max(rowH, arr[rowEnd].h);
         }
+        cursor -= rowH + spacing;
+        for (let i = rowStart; i <= rowEnd; i++) {
+          arr[i].y = Math.max(0, cursor);
+        }
+        rowStart = rowEnd + 1;
       }
-      placed.push(n); return n;
-    };
-    setItems(sorted.map(place));
-  }, [items, SPREAD_W, SPREAD_H, spacing]);
+    });
+    setBoards(usedBoards);
+    setItems(placed);
+  }, [items, boardW, boardH, spacing]);
 
   const snapBottom = useCallback(() => {
     setItems((prev) => prev.map((n) => (n.id === selectedId ? { ...n, y: SPREAD_H - n.h - 1 } : n)));
@@ -399,8 +470,8 @@ export default function App() {
     setItems(next);
   };
 
-  // ---------- EDITORIAL LAYOUTS ----------
-  function applyFirstPageThreeUp(arr, tight) {
+  // ---------- EDITORIAL LAYOUTS WITH AUTO-GROW ----------
+  function firstPageThreeUp(arr, tight) {
     if (arr.length < 1) return arr;
     const s = [...arr];
 
@@ -423,64 +494,31 @@ export default function App() {
     return s;
   }
 
-  function applyEditorial(arr, tight) {
+  const autoSpread = (tight) => {
+    // keep first page rule, then flow the rest with auto-grow
     const m = tight ? 0 : spacing;
-    const s = [...arr];
-    let cursorX = 0;
-    let cursorY = 0;
-    let rowH = 0;
+    const s = [...items];
+    let startIdx = 0;
 
     if (s.length >= 1) {
-      s.splice(0, 3, ...applyFirstPageThreeUp(s.slice(0, 3), tight).slice(0, 3));
-      cursorX = boardW + (m ? m : 0);
-      cursorY = 0;
-      rowH = 0;
+      const first = firstPageThreeUp(s.slice(0, 3), tight);
+      s.splice(0, first.length, ...first);
+      startIdx = 3;
     }
 
-    for (let i = 3; i < s.length; i++) {
-      let n = s[i];
-      const targetH = Math.max(220, Math.min(boardH * 0.55, n.h));
-      const aspect = n.w / Math.max(1, n.h);
-      let w = Math.max(160, Math.min(boardW * 0.55, Math.round(targetH * aspect)));
-      let h = Math.round(targetH);
+    const head = s.slice(0, startIdx);
+    const tail = s.slice(startIdx);
+    const { placed, usedBoards } = flowPlaceAutoGrow(tail, tight);
 
-      if (cursorX + w > SPREAD_W) {
-        cursorX = 0;
-        cursorY += rowH + m;
-        rowH = 0;
-      }
-
-      const currentBoardRight = Math.ceil((cursorX + 1) / boardW) * boardW;
-      if (cursorX + w > currentBoardRight) {
-        cursorX = currentBoardRight + (m ? m : 0);
-      }
-      if (cursorX + w > SPREAD_W) {
-        cursorX = 0;
-        cursorY += rowH + m;
-        rowH = 0;
-      }
-
-      s[i] = { ...n, x: cursorX, y: cursorY, w, h };
-      cursorX += w + m;
-      rowH = Math.max(rowH, h);
-
-      if (cursorY + rowH > SPREAD_H) {
-        cursorY = 0;
-        cursorX = (Math.floor(cursorX / boardW) + 1) * boardW;
-        rowH = 0;
-      }
-    }
-    return s;
-  }
-
-  const editorialSpaced = () => {
-    setLastEditorialTight(false);
-    setItems((prev) => applyEditorial(prev, false));
+    // shift placed tail to start at board 1 (not page 0), so keep page 0 for first 3-up
+    const shifted = placed.map(n => ({ ...n, x: n.x + boardW + (m ? m : 0) }));
+    setBoards(usedBoards); // usedBoards already counts from 1, but we added a margin; still fine
+    setItems([...head, ...shifted]);
+    setLastEditorialTight(tight);
   };
-  const editorialTight = () => {
-    setLastEditorialTight(true);
-    setItems((prev) => applyEditorial(prev, true));
-  };
+
+  const editorialSpaced = () => autoSpread(false);
+  const editorialTight = () => autoSpread(true);
   const shuffleOrder = () => {
     setItems((prev) => {
       const arr = [...prev];
@@ -488,8 +526,10 @@ export default function App() {
         const j = Math.floor(Math.random() * (i + 1));
         [arr[i], arr[j]] = [arr[j], arr[i]];
       }
-      return lastEditorialTight ? applyEditorial(arr, true) : applyEditorial(arr, false);
+      return arr;
     });
+    // re-run the last editorial style to keep layout intention
+    setTimeout(() => autoSpread(lastEditorialTight), 0);
   };
 
   // ---------- BACKGROUND RECTS ----------
@@ -544,7 +584,6 @@ export default function App() {
       img.src = url;
     });
 
-  // export per board, optional ZIP
   const exportBoards = useCallback(
     async (type = "image/png", quality = 0.95, zipMode = false) => {
       if (items.some((n) => n.src && !n._img)) {
@@ -566,7 +605,7 @@ export default function App() {
           ctx.fillRect(0, 0, canvas.width, canvas.height);
         }
 
-        // draw background rectangles for this board
+        // rects
         if (showRects && rects.length) {
           const bx = i * boardW;
           rects.forEach((r) => {
@@ -584,33 +623,29 @@ export default function App() {
           });
         }
 
-        // draw images
+        // images
         const boardX = i * boardW;
         for (const n of items) {
           if (!n._img) continue;
           const inter = intersectRect(n.x, n.y, n.w, n.h, boardX, 0, boardW, boardH);
           if (!inter) continue;
-          const nx = inter.x - n.x;
-          const ny = inter.y - n.y;
-          const nw = inter.w;
-          const nh = inter.h;
-
           const { sx, sy, sw, sh } = coverSourceRect(
-            n._img.naturalWidth,
-            n._img.naturalHeight,
-            n.w, n.h, nx, ny, nw, nh
+            n._img.naturalWidth, n._img.naturalHeight,
+            n.w, n.h,
+            inter.x - n.x, inter.y - n.y, inter.w, inter.h
           );
           if (sw <= 0 || sh <= 0) continue;
 
-          const dx = Math.round((inter.x - boardX) * pixelRatio);
-          const dy = Math.round(inter.y * pixelRatio);
-          const dw = Math.round(nw * pixelRatio);
-          const dh = Math.round(nh * pixelRatio);
-
-          ctx.drawImage(n._img, sx, sy, sw, sh, dx, dy, dw, dh);
+          ctx.drawImage(
+            n._img, sx, sy, sw, sh,
+            Math.round((inter.x - boardX) * pixelRatio),
+            Math.round(inter.y * pixelRatio),
+            Math.round(inter.w * pixelRatio),
+            Math.round(inter.h * pixelRatio)
+          );
         }
 
-        // overlay on top
+        // overlay
         if (overlayImg) {
           ctx.save();
           ctx.globalAlpha = clamp(overlayOpacity, 0, 1);
@@ -643,7 +678,6 @@ export default function App() {
     [items, boards, boardW, boardH, pixelRatio, exportBg, overlayUrl, overlayOpacity, showRects, rects]
   );
 
-  // ui handlers
   const onOverlayUpload = (file) => {
     if (!file) return;
     const url = URL.createObjectURL(file);
@@ -653,10 +687,7 @@ export default function App() {
   const applyPreset = (p) => {
     setBoardW(p.w);
     setBoardH(p.h);
-    setTimeout(() => {
-      const el = wrapperRef.current;
-      if (el) fitPreview();
-    }, 0);
+    setTimeout(() => fitPreview(), 0);
   };
 
   return (
@@ -666,8 +697,8 @@ export default function App() {
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => { e.preventDefault(); onDropFiles(e.dataTransfer.files); }}
     >
-      {/* Toolbar */}
-      <div className="toolbar" style={{ gap: 6, flexWrap: "wrap", display: "flex", alignItems: "center" }}>
+      {/* Top toolbar */}
+      <div ref={topBarRef} className="toolbar" style={{ gap: 6, flexWrap: "wrap", display: "flex", alignItems: "center" }}>
         <strong>858 Random Spread Layout</strong>
 
         <span className="muted">Boards</span>
@@ -713,18 +744,17 @@ export default function App() {
         <button onClick={() => exportBoards("image/png", 0.95, true)}>Export ZIP</button>
       </div>
 
-      {/* Editorial + Rects + Overlay + Z-order */}
-      <div className="toolbar" style={{ gap: 6, display: "flex", flexWrap: "wrap", alignItems: "center" }}>
+      {/* Secondary toolbar */}
+      <div ref={secondBarRef} className="toolbar" style={{ gap: 6, display: "flex", flexWrap: "wrap", alignItems: "center" }}>
         <strong>Editorial</strong>
-        <button onClick={editorialSpaced}>Editorial (spaced)</button>
-        <button onClick={editorialTight}>Editorial (seamless)</button>
+        <button onClick={() => autoSpread(false)}>Auto Spread</button>
+        <button onClick={() => autoSpread(true)}>Auto Spread (tight)</button>
         <button onClick={shuffleOrder}>Shuffle order</button>
 
         <strong style={{ marginLeft: 8 }}>Background</strong>
         <button onClick={() => setShowRects((s) => !s)}>{showRects ? "Hide Rects" : "Show Rects"}</button>
         <button onClick={generateRects} disabled={!showRects}>Regenerate</button>
 
-        {/* Rectangle controls */}
         <span className="muted">Cols</span>
         <input type="number" min={1} max={20} value={rectCols} onChange={(e) => setRectCols(clamp(parseInt(e.target.value||"1",10),1,20))} style={{ width: 60 }} />
         <span className="muted">Rows</span>
@@ -735,7 +765,7 @@ export default function App() {
         <span className="muted">→</span>
         <input type="number" min={1} max={100} value={rectMaxWpc} onChange={(e)=>setRectMaxWpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
 
-        <span className="muted">H%&nbsp;</span>
+        <span className="muted">H%</span>
         <input type="number" min={1} max={100} value={rectMinHpc} onChange={(e)=>setRectMinHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
         <span className="muted">→</span>
         <input type="number" min={1} max={100} value={rectMaxHpc} onChange={(e)=>setRectMaxHpc(clamp(parseInt(e.target.value||"1",10),1,100))} style={{ width: 55 }} />
@@ -769,19 +799,9 @@ export default function App() {
           Add images
           <input type="file" multiple accept="image/*" style={{ marginLeft: 6 }} onChange={(e) => e.target.files && onDropFiles(e.target.files)} />
         </label>
-
-        <span style={{ marginLeft: 8 }} className="muted">Preview Zoom</span>
-        <input
-          type="range"
-          min={0.5} max={2} step={0.05}
-          value={zoom}
-          onChange={(e)=>setZoom(parseFloat(e.target.value))}
-          style={{ width: 140 }}
-          title="Scales the auto-fit preview size (capped at 1× to keep it sharp)"
-        />
       </div>
 
-      {/* Spread preview (responsive) */}
+      {/* Spread preview (fills available viewport height at 100% scale-or-under) */}
       <div
         ref={wrapperRef}
         className="spreadWrapper"
@@ -866,7 +886,7 @@ export default function App() {
       </div>
 
       <div className="muted" style={{ opacity: 0.7 }}>
-        Preview auto-fits (with zoom). Exports honour the exact artboard size and include overlay and background rectangles.
+        Preview fits remaining viewport height at 100% scale or under. Auto Spread, Pack, and Pack Bottom will add boards if needed to avoid overlaps.
       </div>
     </div>
   );
