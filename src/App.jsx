@@ -1,92 +1,63 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 
-/**
- * 858 Random Spread Layout — single-file app
- * - Default board size: 1080 × 1320 (portrait)
- * - Max 20 boards
- * - Randomise / Editorial (spaced & seamless) / Pack
- * - Spacing-aware, non-overlapping with safe fallback
- * - Guides with colour & opacity + slide labels (not exported)
- * - Manual preview zoom (no auto-responsiveness)
- * - Z-order controls, fix-bounds, reset layout, image count
- * - Overlays: bars / rects / circles / plus / cross (+ upload image/SVG)
- *   with opacity, colour favourites (save to slots, load from slots)
- * - Save / load full preset (JSON)
- * - Export PNG / JPG / ZIP with filenames "858 art club_x"
- */
-
-// ====== Config ======
+/** ============ Constants ============ */
 const MAX_BOARDS = 20;
-const DEFAULT_W = 1080; // portrait default
-const DEFAULT_H = 1320;
+const DEFAULT_W = 1080;
+const DEFAULT_H = 1320; // portrait first page as requested
 const DEFAULT_SPACING = 24;
-const UID = () => Math.random().toString(36).slice(2, 10);
+const BOARD_LABEL_STYLE = {
+  position: "absolute",
+  top: 6,
+  left: 6,
+  fontSize: 14, // bigger label
+  fontWeight: 700,
+  letterSpacing: 0.5,
+  color: "rgba(127,255,127,0.8)",
+  userSelect: "none",
+  pointerEvents: "none",
+};
+const uid = () => Math.random().toString(36).slice(2, 10);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
-// ====== Presets ======
-const BOARD_PRESETS = [
-  { key: "1080x1320 (Portrait)", w: 1080, h: 1320 },
-  { key: "1320x1080 (Landscape)", w: 1320, h: 1080 },
-  { key: "1080x1080 (Square)", w: 1080, h: 1080 },
-  { key: "1920x1080 (16:9)", w: 1920, h: 1080 },
-  { key: "1080x1920 (9:16)", w: 1080, h: 1920 },
-];
-
-// ====== Styles (global) ======
-const globalStyle = `
-  html, body, #root { height: 100%; background:#000; color:#e5e5e5; }
-  body { margin:0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, 'Helvetica Neue', Arial; }
-  /* reserve space for the bottom control dock */
-  body { padding-bottom: 220px; }
-  @media (max-width: 1200px) { body { padding-bottom: 260px; } }
-
-  .btn { background:#111; border:1px solid #2a2a2a; color:#e5e5e5; padding:6px 10px; border-radius:8px; cursor:pointer; }
-  .btn:hover { background:#171717; }
-  .btn:active { transform: translateY(1px); }
-  .btn-danger { background:#301010; border-color:#4a1a1a; color:#ffb4b4; }
-  .btn-green { background:#0f1f0f; border-color:#1f3f1f; color:#b6ffb6; }
-  .btn-blue { background:#0f1628; border-color:#203050; color:#b6d8ff; }
-
-  .field { background:#0b0b0b; border:1px solid #2a2a2a; color:#e5e5e5; padding:6px 8px; border-radius:8px; }
-  .field::placeholder { color:#888; }
-
-  .dock { position:fixed; left:0; right:0; bottom:0; z-index:10; background:rgba(8,8,8,0.98); border-top:1px solid #1f1f1f; }
-  .dock-inner { display:flex; flex-wrap:wrap; gap:10px 14px; padding:12px 14px; align-items:center; }
-  .dock-group { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-
-  .chip { padding:4px 8px; border-radius:999px; font-size:12px; border:1px solid #2a2a2a; background:#0b0b0b; }
-  .mini { font-size:12px; opacity:0.75; }
-  .label { font-size:12px; color:#a3a3a3; }
-
-  .preview-wrap { margin:12px auto; border:1px solid #1d1d1d; background:#000; overflow:hidden; }
-  .guide { position:absolute; top:0; bottom:0; width:1px; pointer-events:none; }
-  .slide-tag { position:absolute; top:4px; left:6px; font-size:10px; opacity:0.6; pointer-events:none; }
-`;
-
-// ====== Helpers ======
-const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
-const copyList = (a) => a.map((x) => ({ ...x }));
-const shuffleInPlace = (a) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } };
-const overlapWith = (a, b, margin) =>
-  !(
-    a.x + a.w + margin <= b.x ||
-    b.x + b.w + margin <= a.x ||
-    a.y + a.h + margin <= b.y ||
-    b.y + b.h + margin <= a.y
-  );
-
-function clampToBoards(n, boardW, boardH, boards, spacing) {
-  const bx = Math.floor(n.x / boardW); // which board index
-  const left = bx * boardW + spacing;
-  const right = (bx + 1) * boardW - spacing - n.w;
-  return {
-    ...n,
-    x: clamp(n.x, left, right),
-    y: clamp(n.y, spacing, boardH - spacing - n.h),
-  };
+/** Helper: rect intersection */
+function intersect(ax, ay, aw, ah, bx, by, bw, bh) {
+  const x1 = Math.max(ax, bx);
+  const y1 = Math.max(ay, by);
+  const x2 = Math.min(ax + aw, bx + bw);
+  const y2 = Math.min(ay + ah, by + bh);
+  const w = x2 - x1;
+  const h = y2 - y1;
+  if (w <= 0 || h <= 0) return null;
+  return { x: x1, y: y1, w, h };
 }
 
-function useImageElement(src) {
+/** “object-fit: cover” source crop maths (no distortion) */
+function coverCrop(naturalW, naturalH, frameW, frameH, sx = 0, sy = 0, sw = frameW, sh = frameH) {
+  const frameAR = frameW / frameH;
+  const natAR = naturalW / naturalH;
+
+  let coverW, coverH;
+  if (natAR > frameAR) {
+    // wider source -> scale by height
+    coverH = naturalH;
+    coverW = frameAR * coverH;
+  } else {
+    // taller source -> scale by width
+    coverW = naturalW;
+    coverH = coverW / frameAR;
+  }
+  // centre crop
+  const srcX = (naturalW - coverW) / 2 + (sx / frameW) * coverW;
+  const srcY = (naturalH - coverH) / 2 + (sy / frameH) * coverH;
+  const srcW = (sw / frameW) * coverW;
+  const srcH = (sh / frameH) * coverH;
+
+  return { sx: srcX, sy: srcY, sw: srcW, sh: srcH };
+}
+
+/** Load to HTMLImageElement */
+function useImg(src) {
   const [img, setImg] = useState(null);
   useEffect(() => {
     if (!src) return;
@@ -98,107 +69,48 @@ function useImageElement(src) {
   return img;
 }
 
-// ====== Safe placer used by all layouts ======
-function placeSafely(node, { boards, boardW, boardH, spacing }, startBoard = 0) {
-  const MAX_TRIES = 800;
-  const triesPerBoard = Math.max(60, Math.floor(MAX_TRIES / Math.max(1, boards)));
-  const out = { ...node };
-  out.w = clamp(out.w || Math.floor(boardW * 0.4), 8, boardW - spacing * 2);
-  out.h = clamp(out.h || Math.floor(out.w * 0.75), 8, boardH - spacing * 2);
-
-  for (let biShift = 0; biShift < boards; biShift++) {
-    const bi = (startBoard + biShift) % boards;
-    const bx = bi * boardW;
-    for (let t = 0; t < triesPerBoard; t++) {
-      const x = bx + Math.floor(Math.random() * Math.max(1, boardW - out.w - spacing * 2)) + spacing;
-      const y = Math.floor(Math.random() * Math.max(1, boardH - out.h - spacing * 2)) + spacing;
-      const candidate = { ...out, x, y };
-      let hit = false;
-      for (const p of placeSafely._placed || []) {
-        if (overlapWith(candidate, p, spacing)) { hit = true; break; }
-      }
-      if (!hit) return candidate;
-    }
-  }
-  const bx = (startBoard % boards) * boardW;
-  out.x = clamp(bx + spacing, bx, bx + boardW - out.w - spacing);
-  out.y = clamp(spacing, 0, boardH - out.h - spacing);
-  return out;
-}
-
-// ====== Crop ops for exporting by board ======
-function intersectRect(ax, ay, aw, ah, bx, by, bw, bh) {
-  const x1 = Math.max(ax, bx);
-  const y1 = Math.max(ay, by);
-  const x2 = Math.min(ax + aw, bx + bw);
-  const y2 = Math.min(ay + ah, by + bh);
-  const w = x2 - x1;
-  const h = y2 - y1;
-  if (w <= 0 || h <= 0) return null;
-  return { x: x1, y: y1, w, h };
-}
-function cropOpsForBoard(images, boardIndex, boardW, boardH) {
-  const boardX = boardIndex * boardW;
-  const ops = [];
-  for (const n of images) {
-    const inter = intersectRect(n.x, n.y, n.w, n.h, boardX, 0, boardW, boardH);
-    if (!inter) continue;
-    const sx = inter.x - n.x;
-    const sy = inter.y - n.y;
-    const sw = inter.w;
-    const sh = inter.h;
-    const dx = inter.x - boardX;
-    const dy = inter.y;
-    ops.push({ img: n._imageEl, sx, sy, sw, sh, dx, dy, dw: sw, dh: sh, placedW: n.w, placedH: n.h });
-  }
-  return ops;
-}
-
-// ====== Draggable / Resizable Image Item ======
+/** ============ Item (draggable/resizable) ============ */
 function Item({ node, selected, onSelect, onChange }) {
   const ref = useRef(null);
-  const imgEl = useImageElement(node.src);
+  const img = useImg(node.src);
 
-  // patch image element mapping for export (no stretching)
+  // persist natural size on the node for export mapping
   useEffect(() => {
-    if (imgEl && node._imageEl !== imgEl) onChange({ ...node, _imageEl: imgEl });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [imgEl]);
-
-  // Keep the natural-to-placed mapping
-  useEffect(() => {
-    if (node._imageEl) {
-      node._imageEl._placedW = node.w;
-      node._imageEl._placedH = node.h;
+    if (!img) return;
+    if (node._natW !== img.naturalWidth || node._natH !== img.naturalHeight) {
+      onChange({ ...node, _natW: img.naturalWidth, _natH: img.naturalHeight });
     }
-  }, [node]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [img]);
 
   // drag
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    let startX = 0, startY = 0, oX = 0, oY = 0, dragging = false;
-    const down = (e) => {
-      if (e.target.closest("[data-handle]") || e.button === 2) return;
-      dragging = true; onSelect();
+    let drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
+
+    const d = (e) => {
+      if (e.button === 2 || e.target.dataset.handle) return;
+      drag = true;
       const p = e.touches?.[0] || e;
-      startX = p.clientX; startY = p.clientY; oX = node.x; oY = node.y;
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
+      sx = p.clientX; sy = p.clientY; ox = node.x; oy = node.y;
+      window.addEventListener("pointermove", m);
+      window.addEventListener("pointerup", u);
+      onSelect(node.id);
     };
-    const move = (e) => {
-      if (!dragging) return;
+    const m = (e) => {
+      if (!drag) return;
       const p = e.touches?.[0] || e;
-      onChange({ ...node, x: oX + (p.clientX - startX), y: oY + (p.clientY - startY) });
+      onChange({ ...node, x: ox + (p.clientX - sx), y: oy + (p.clientY - sy) });
     };
-    const up = () => {
-      dragging = false;
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+    const u = () => {
+      drag = false;
+      window.removeEventListener("pointermove", m);
+      window.removeEventListener("pointerup", u);
     };
-    el.addEventListener("pointerdown", down);
-    return () => el.removeEventListener("pointerdown", down);
-  }, [node, onSelect, onChange]);
+    el.addEventListener("pointerdown", d);
+    return () => el.removeEventListener("pointerdown", d);
+  }, [node, onChange, onSelect]);
 
   // resize
   const startResize = (dir, e) => {
@@ -206,731 +118,635 @@ function Item({ node, selected, onSelect, onChange }) {
     const p0 = e.touches?.[0] || e;
     const sx = p0.clientX, sy = p0.clientY;
     const init = { x: node.x, y: node.y, w: node.w, h: node.h };
-    const onMove = (ev) => {
+    const mm = (ev) => {
       const p = ev.touches?.[0] || ev;
       let dx = p.clientX - sx, dy = p.clientY - sy;
       let { x, y, w, h } = init;
-      if (dir.includes("e")) w = clamp(init.w + dx, 10, 99999);
-      if (dir.includes("s")) h = clamp(init.h + dy, 10, 99999);
-      if (dir.includes("w")) { w = clamp(init.w - dx, 10, 99999); x = init.x + dx; }
-      if (dir.includes("n")) { h = clamp(init.h - dy, 10, 99999); y = init.y + dy; }
+      if (dir.includes("e")) w = Math.max(16, init.w + dx);
+      if (dir.includes("s")) h = Math.max(16, init.h + dy);
+      if (dir.includes("w")) { w = Math.max(16, init.w - dx); x = init.x + dx; }
+      if (dir.includes("n")) { h = Math.max(16, init.h - dy); y = init.y + dy; }
       onChange({ ...node, x, y, w, h });
     };
-    const onUp = () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  };
-
-  const style = {
-    position: "absolute",
-    left: node.x,
-    top: node.y,
-    width: node.w,
-    height: node.h,
-    transform: `rotate(${node.rotation || 0}deg)`,
-    transformOrigin: "top left",
-    cursor: "grab",
-    userSelect: "none",
+    const uu = () => {
+      window.removeEventListener("pointermove", mm);
+      window.removeEventListener("pointerup", uu);
+    };
+    window.addEventListener("pointermove", mm);
+    window.addEventListener("pointerup", uu);
   };
 
   return (
-    <div ref={ref} style={style} onClick={onSelect}>
-      {imgEl ? (
-        <img src={node.src} alt="" draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+    <div
+      ref={ref}
+      style={{
+        position: "absolute",
+        left: node.x, top: node.y, width: node.w, height: node.h,
+        border: selected ? "1px dashed rgba(180,255,180,0.7)" : "none",
+        cursor: "grab", userSelect: "none",
+      }}
+      onClick={() => onSelect(node.id)}
+    >
+      {img ? (
+        <img
+          src={node.src}
+          style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
+          draggable={false}
+          alt=""
+        />
       ) : (
-        <div style={{ width: "100%", height: "100%", background: "#0f0f0f" }} />
+        <div style={{ width: "100%", height: "100%", background: "#222" }} />
       )}
+
       {selected && (
-        <>
-          <div style={{ position: "absolute", inset: 0, border: "1px dashed #4f46e5", pointerEvents: "none" }} />
-          {[
-            ["nw", 0, 0], ["ne", "100%", 0], ["sw", 0, "100%"], ["se", "100%", "100%"],
-          ].map(([dir, l, t]) => (
-            <span key={dir} data-handle onPointerDown={(e) => startResize(dir, e)}
-              style={{
-                position: "absolute",
-                left: typeof l === "number" ? l - 6 : l,
-                top: typeof t === "number" ? t - 6 : t,
-                width: 12, height: 12, background: "white", border: "1px solid #000", borderRadius: 2,
-                transform: typeof l === "string" || typeof t === "string" ? "translate(-50%, -50%)" : undefined,
-                cursor: `${dir}-resize`,
-              }} />
-          ))}
-        </>
+        ["nw","ne","sw","se"].map((dir) => {
+          const pos = {
+            position: "absolute",
+            width: 12, height: 12, background: "#111",
+            border: "1px solid #8bff8b", borderRadius: 2,
+            transform: "translate(-50%,-50%)"
+          };
+          const p = {
+            nw: { left: 0, top: 0 }, ne: { left: "100%", top: 0 },
+            sw: { left: 0, top: "100%" }, se: { left: "100%", top: "100%" },
+          }[dir];
+          return (
+            <span
+              key={dir}
+              data-handle
+              onPointerDown={(e) => startResize(dir, e)}
+              style={{ ...pos, ...p, cursor: `${dir}-resize` }}
+            />
+          );
+        })
       )}
     </div>
   );
 }
 
-// ====== Main App ======
+/** ============ Main App ============ */
 export default function App() {
-  // board
+  // geometry
   const [boards, setBoards] = useState(6);
-  const [boardW, setBoardW] = useState(DEFAULT_W);
-  const [boardH, setBoardH] = useState(DEFAULT_H);
-  const [presetKey, setPresetKey] = useState(BOARD_PRESETS[0].key);
+  const [BW, setBW] = useState(DEFAULT_W);
+  const [BH, setBH] = useState(DEFAULT_H);
   const [spacing, setSpacing] = useState(DEFAULT_SPACING);
-  const [exportScale, setExportScale] = useState(2);
-  const [bgColor, setBgColor] = useState("#000000");
 
   // preview
-  const [previewZoom, setPreviewZoom] = useState(0.35);
+  const [zoom, setZoom] = useState(0.6); // manual
   const [showGuides, setShowGuides] = useState(true);
-  const [guideColor, setGuideColor] = useState("#0eea2b");
-  const [guideOpacity, setGuideOpacity] = useState(0.35);
+  const [guideColour, setGuideColour] = useState("#00ff5c");
+  const [guideAlpha, setGuideAlpha] = useState(0.35);
 
-  // images
-  const [images, setImages] = useState([]); // {id, src, x,y,w,h,rotation,_imageEl}
-  const [selectedId, setSelectedId] = useState(null);
+  // content
+  const [images, setImages] = useState([]); // {id, src, x,y,w,h, _natW,_natH}
+  const [selected, setSelected] = useState(null);
 
-  // overlays
-  const [overlayOpacity, setOverlayOpacity] = useState(0.9);
-  const [overlayA, setOverlayA] = useState("#12ff41");
-  const [overlayB, setOverlayB] = useState("#101010");
-  const [overlayShapes, setOverlayShapes] = useState([]); // {id, type, x,y,w,h, r? , color}
-  const overlayImageRef = useRef(null);
-  const [slotsA, setSlotsA] = useState(() => JSON.parse(localStorage.getItem("slotsA") || "[]"));
-  const [slotsB, setSlotsB] = useState(() => JSON.parse(localStorage.getItem("slotsB") || "[]"));
+  // background
+  const [bgColour, setBgColour] = useState("#000000");
 
-  const spreadW = useMemo(() => boards * boardW, [boards, boardW]);
-  const spreadH = boardH;
-
-  // ====== Preset change ======
-  useEffect(() => {
-    const found = BOARD_PRESETS.find(p => p.key === presetKey);
-    if (found) {
-      setBoardW(found.w);
-      setBoardH(found.h);
-    }
-  }, [presetKey]);
-
-  // ====== Drag/Drop image loader ======
-  const readAsDataURL = (file) => new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(file);
+  // colour favourites (persist)
+  const [colours, setColours] = useState(() => {
+    const raw = localStorage.getItem("favColours858");
+    return raw ? JSON.parse(raw) : ["#00ff5c", "#ffffff", "#1a1a1a", "#ff00ff", "#00c0ff"];
   });
-  const onAddImages = async (fileList) => {
-    const files = Array.from(fileList || []);
-    const newNodes = [];
-    for (const f of files) {
+  useEffect(() => {
+    localStorage.setItem("favColours858", JSON.stringify(colours));
+  }, [colours]);
+
+  // export settings
+  const [exportScale, setExportScale] = useState(2);
+
+  // computed
+  const SPREAD_W = boards * BW;
+  const SPREAD_H = BH;
+
+  /** Drop / choose files */
+  const addFiles = async (fileList) => {
+    const read = (f) =>
+      new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = rej;
+        r.readAsDataURL(f);
+      });
+
+    const out = [];
+    for (const f of fileList) {
       if (!f.type?.startsWith("image/")) continue;
-      const src = await readAsDataURL(f);
-      const id = UID();
-      const w = Math.floor(boardW * (0.25 + Math.random() * 0.35));
-      const h = Math.floor(w * (0.65 + Math.random() * 0.4));
-      newNodes.push({ id, src, x: spacing, y: spacing, w, h, rotation: 0 });
+      const src = await read(f);
+      out.push({
+        id: uid(),
+        src,
+        // start temp size ~ quarter board width
+        w: Math.floor(BW * (0.28 + Math.random() * 0.18)),
+        h: Math.floor(BH * (0.28 + Math.random() * 0.18)),
+        x: Math.floor(Math.random() * (SPREAD_W - BW)),
+        y: Math.floor(Math.random() * (SPREAD_H - BH)),
+      });
     }
-    setImages(prev => [...prev, ...newNodes]);
+    setImages((p) => [...p, ...out]);
   };
 
-  // ====== Layouts ======
-  const randomise = useCallback(
-    (opts = { acrossBoards: true }) => {
-      const src = copyList(images);
-      if (!src.length) return;
-      shuffleInPlace(src);
-      const placed = [];
-      placeSafely._placed = placed;
-      let nextBoard = 0;
-      for (const n of src) {
-        const w = Math.floor(boardW * (0.28 + Math.random() * 0.5));
-        const h = Math.floor(w * (0.6 + Math.random() * 0.4));
-        const seeded = { ...n, w, h };
-        const placedOne = placeSafely(
-          seeded,
-          { boards, boardW, boardH, spacing },
-          opts.acrossBoards ? nextBoard : Math.floor(Math.random() * boards)
-        );
-        placed.push(placedOne);
-        nextBoard = (nextBoard + 1) % boards;
-      }
-      placeSafely._placed = null;
-      setImages(placed.map(n => clampToBoards(n, boardW, boardH, boards, spacing)));
-      setSelectedId(null);
-    },
-    [images, boards, boardW, boardH, spacing]
-  );
+  /** Keep everything within bounds */
+  const fixBounds = () => {
+    setImages((prev) =>
+      prev.map((n) => ({
+        ...n,
+        x: clamp(n.x, 0, SPREAD_W - n.w),
+        y: clamp(n.y, 0, SPREAD_H - n.h),
+        w: Math.min(n.w, SPREAD_W),
+        h: Math.min(n.h, SPREAD_H),
+      }))
+    );
+  };
 
-  const editorial = useCallback((gap = spacing) => {
-    const src = copyList(images);
-    if (!src.length) return;
-    shuffleInPlace(src);
-
+  /** Simple non-overlap pack with spacing */
+  const pack = () => {
     const placed = [];
-    placeSafely._placed = placed;
-
-    const colsPerBoard = 3;
-    let idx = 0;
-
-    for (let b = 0; b < boards && idx < src.length; b++) {
-      const bx = b * boardW;
-      const colW = Math.floor((boardW - gap * (colsPerBoard + 1)) / colsPerBoard);
-      for (let c = 0; c < colsPerBoard && idx < src.length; c++) {
-        let y = gap;
-        while (idx < src.length && y < boardH - gap) {
-          const n = src[idx++];
-          const h = clamp(Math.floor(colW * (0.75 + Math.random() * 0.5)), 40, boardH - y - gap);
-          const seeded = { ...n, x: bx + gap + c * (colW + gap), y, w: colW, h };
-          const ok = !placed.some((p) => overlapWith(seeded, p, gap * 0.5));
-          placed.push(ok ? seeded : placeSafely(seeded, { boards, boardW, boardH, spacing: gap }, b));
-          y += h + gap;
-        }
-      }
-    }
-    while (idx < src.length) {
-      const n = src[idx++];
-      placed.push(placeSafely({ ...n }, { boards, boardW, boardH, spacing }));
-    }
-
-    placeSafely._placed = null;
-    setImages(placed.map(n => clampToBoards(n, boardW, boardH, boards, spacing)));
-    setSelectedId(null);
-  }, [images, boards, boardW, boardH, spacing]);
-
-  const editorialSeamless = () => editorial(0);
-
-  const pack = useCallback(() => {
-    const src = [...images];
-    if (!src.length) return;
-    src.forEach(n => {
-      n.w = clamp(n.w || Math.floor(boardW * 0.4), 8, boardW - spacing * 2);
-      n.h = clamp(n.h || Math.floor(n.w * 0.75), 8, boardH - spacing * 2);
-    });
-    src.sort((a, b) => b.w * b.h - a.w * a.h);
-
-    const placed = [];
-    placeSafely._placed = placed;
-
-    for (const n of src) {
-      let done = false;
-      for (let y = spacing; y <= boardH - n.h - spacing && !done; y += Math.max(spacing, 12)) {
-        for (let bi = 0; bi < boards && !done; bi++) {
-          for (let x = bi * boardW + spacing; x <= (bi + 1) * boardW - n.w - spacing; x += Math.max(spacing, 12)) {
-            const c = { ...n, x, y };
-            if (!placed.some((p) => overlapWith(c, p, spacing))) { placed.push(c); done = true; }
+    const res = [...images].sort((a, b) => b.w * b.h - a.w * a.h).map((n) => {
+      let ok = false, x=0,y=0;
+      const step = Math.max(8, spacing);
+      for (y = 0; y <= SPREAD_H - n.h && !ok; y += step) {
+        for (x = 0; x <= SPREAD_W - n.w && !ok; x += step) {
+          const cand = { ...n, x, y };
+          if (
+            !placed.some((p) =>
+              !(
+                cand.x + cand.w + spacing <= p.x ||
+                p.x + p.w + spacing <= cand.x ||
+                cand.y + cand.h + spacing <= p.y ||
+                p.y + p.h + spacing <= cand.y
+              )
+            )
+          ) {
+            ok = true;
+            placed.push(cand);
+            return cand;
           }
         }
       }
-      if (!done) placed.push(placeSafely(n, { boards, boardW, boardH, spacing }));
-    }
-    placeSafely._placed = null;
-    setImages(placed.map(n => clampToBoards(n, boardW, boardH, boards, spacing)));
-    setSelectedId(null);
-  }, [images, boards, boardW, boardH, spacing]);
-
-  const fixBounds = () => {
-    setImages(prev => prev.map(n => clampToBoards(n, boardW, boardH, boards, spacing)));
+      const keep = { ...n, x: clamp(n.x, 0, SPREAD_W - n.w), y: clamp(n.y, 0, SPREAD_H - n.h) };
+      placed.push(keep);
+      return keep;
+    });
+    setImages(res);
   };
 
-  const resetLayout = () => {
-    setImages(prev => prev.map(n => ({ ...n, x: spacing, y: spacing, w: Math.floor(boardW * 0.35), h: Math.floor(boardW * 0.26) })));
-    setSelectedId(null);
+  /** Randomise grid across all boards */
+  const randomise = () => {
+    const res = images.map((n, idx) => {
+      const col = idx % boards;
+      const x = Math.floor(col * BW + spacing + Math.random() * (BW - n.w - spacing * 2));
+      const y = Math.floor(spacing + Math.random() * (BH - n.h - spacing * 2));
+      return { ...n, x, y };
+    });
+    setImages(res);
   };
 
-  // ====== Overlays ======
-  const regenBars = () => {
-    const items = [];
-    const count = Math.floor(boards * 8);
-    for (let i = 0; i < count; i++) {
-      const bi = Math.floor(Math.random() * boards);
-      const x = bi * boardW + Math.floor(Math.random() * boardW);
-      const w = 6 + Math.floor(Math.random() * 16);
-      const y = Math.floor(Math.random() * boardH);
-      const h = 80 + Math.floor(Math.random() * 380);
-      items.push({ id: UID(), type: "bar", x, y, w, h, color: overlayA });
-    }
-    setOverlayShapes(items);
-  };
-  const regenRects = () => {
-    const items = [];
-    const count = Math.floor(boards * 6);
-    for (let i = 0; i < count; i++) {
-      const bi = Math.floor(Math.random() * boards);
-      const x = bi * boardW + spacing + Math.floor(Math.random() * (boardW - spacing * 2));
-      const y = spacing + Math.floor(Math.random() * (boardH - spacing * 2));
-      const w = 80 + Math.floor(Math.random() * (boardW * 0.4));
-      const h = 50 + Math.floor(Math.random() * (boardH * 0.25));
-      items.push({ id: UID(), type: "rect", x, y, w, h, color: overlayB });
-    }
-    setOverlayShapes(items);
-  };
-  const regenCircles = () => {
-    const items = [];
-    const count = Math.floor(boards * 4);
-    for (let i = 0; i < count; i++) {
-      const bi = Math.floor(Math.random() * boards);
-      const r = 20 + Math.floor(Math.random() * 80);
-      const x = bi * boardW + spacing + Math.floor(Math.random() * (boardW - spacing * 2 - r * 2));
-      const y = spacing + Math.floor(Math.random() * (boardH - spacing * 2 - r * 2));
-      items.push({ id: UID(), type: "circle", x, y, w: r * 2, h: r * 2, color: overlayA });
-    }
-    setOverlayShapes(items);
-  };
-  const regenPlus = () => {
-    const items = [];
-    const count = Math.floor(boards * 6);
-    for (let i = 0; i < count; i++) {
-      const bi = Math.floor(Math.random() * boards);
-      const s = 14 + Math.floor(Math.random() * 22);
-      const x = bi * boardW + spacing + Math.floor(Math.random() * (boardW - spacing * 2 - s));
-      const y = spacing + Math.floor(Math.random() * (boardH - spacing * 2 - s));
-      items.push({ id: UID(), type: "plus", x, y, w: s, h: s, color: overlayA });
-    }
-    setOverlayShapes(items);
-  };
-  const regenCross = () => {
-    const items = [];
-    const count = Math.floor(boards * 6);
-    for (let i = 0; i < count; i++) {
-      const bi = Math.floor(Math.random() * boards);
-      const s = 14 + Math.floor(Math.random() * 22);
-      const x = bi * boardW + spacing + Math.floor(Math.random() * (boardW - spacing * 2 - s));
-      const y = spacing + Math.floor(Math.random() * (boardH - spacing * 2 - s));
-      items.push({ id: UID(), type: "cross", x, y, w: s, h: s, color: overlayB });
-    }
-    setOverlayShapes(items);
-  };
-  const hideOverlay = () => setOverlayShapes([]);
+  /** Editorial: columnar masonry that spreads across all boards (no overlap) */
+  const editorial = (seamless = false) => {
+    const colsPerBoard = 3;
+    const totalCols = colsPerBoard * boards;
+    const colW = (BW - spacing * (colsPerBoard + 1)) / colsPerBoard;
+    const gutters = spacing;
 
-  // upload overlay image/SVG
-  const onUploadOverlay = async (file) => {
-    if (!file) return;
-    const src = await readAsDataURL(file);
-    // put as a board-wide image overlay
-    const items = [];
+    const heights = new Array(totalCols).fill(gutters);
+    const res = images.map((n, i) => {
+      const colIdx = i % totalCols;
+      const boardIdx = Math.floor(colIdx / colsPerBoard);
+      const withinBoardCol = colIdx % colsPerBoard;
+
+      const x = boardIdx * BW + gutters + withinBoardCol * (colW + gutters);
+      const targetW = colW;
+      // keep aspect ratio by adjusting height (no distortion)
+      const aspect = n._natW && n._natH ? n._natW / n._natH : 1.5;
+      const targetH = Math.max(60, Math.round(targetW / aspect)); // “cover” feel will be done at draw
+
+      const y = heights[colIdx];
+      heights[colIdx] += targetH + gutters * (seamless ? 0 : 1);
+
+      return { ...n, x, y, w: targetW, h: targetH };
+    });
+    setImages(res);
+  };
+
+  /** Snap to bottom of each board (keeps x) */
+  const snapBottom = () => {
+    setImages((prev) =>
+      prev.map((n) => {
+        const boardIdx = Math.floor(n.x / BW);
+        const xWithin = n.x - boardIdx * BW;
+        return { ...n, x: boardIdx * BW + xWithin, y: BH - n.h - spacing };
+      })
+    );
+  };
+
+  /** Distribute boards – ensure all boards get roughly equal count */
+  const distributeBoards = () => {
+    if (!images.length) return;
+    const per = Math.ceil(images.length / boards);
+    const sorted = [...images];
+    const res = [];
     for (let b = 0; b < boards; b++) {
-      items.push({ id: UID(), type: "image", x: b * boardW, y: 0, w: boardW, h: boardH, src, color: "#ffffff" });
-    }
-    setOverlayShapes(items);
-  };
-
-  // favourites slots
-  const saveSlotA = () => {
-    const next = [...slotsA, overlayA].slice(-6);
-    setSlotsA(next);
-    localStorage.setItem("slotsA", JSON.stringify(next));
-  };
-  const saveSlotB = () => {
-    const next = [...slotsB, overlayB].slice(-6);
-    setSlotsB(next);
-    localStorage.setItem("slotsB", JSON.stringify(next));
-  };
-
-  // ====== Save / Load preset (whole app) ======
-  const savePreset = () => {
-    const data = {
-      boards, boardW, boardH, spacing, exportScale, bgColor,
-      images, overlayOpacity, overlayA, overlayB, overlayShapes,
-      guideColor, guideOpacity, showGuides, presetKey
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = "858-layout-preset.json"; a.click();
-  };
-  const loadPreset = (file) => {
-    const r = new FileReader();
-    r.onload = () => {
-      try {
-        const d = JSON.parse(r.result);
-        if (d.boards) setBoards(clamp(d.boards, 1, MAX_BOARDS));
-        if (d.boardW) setBoardW(d.boardW);
-        if (d.boardH) setBoardH(d.boardH);
-        if (typeof d.spacing === "number") setSpacing(clamp(d.spacing, 0, 400));
-        if (typeof d.exportScale === "number") setExportScale(clamp(d.exportScale, 1, 4));
-        if (d.bgColor) setBgColor(d.bgColor);
-        if (Array.isArray(d.images)) setImages(d.images);
-        if (typeof d.overlayOpacity === "number") setOverlayOpacity(clamp(d.overlayOpacity, 0, 1));
-        if (d.overlayA) setOverlayA(d.overlayA);
-        if (d.overlayB) setOverlayB(d.overlayB);
-        if (Array.isArray(d.overlayShapes)) setOverlayShapes(d.overlayShapes);
-        if (d.guideColor) setGuideColor(d.guideColor);
-        if (typeof d.guideOpacity === "number") setGuideOpacity(clamp(d.guideOpacity, 0, 1));
-        if (typeof d.showGuides === "boolean") setShowGuides(d.showGuides);
-        if (d.presetKey) setPresetKey(d.presetKey);
-      } catch {
-        alert("Invalid preset JSON");
+      const start = b * per;
+      const slice = sorted.slice(start, start + per);
+      const left = b * BW + spacing;
+      let y = spacing;
+      for (const n of slice) {
+        const w = Math.min(Math.max(BW * 0.28, n.w || BW * 0.32), BW - spacing * 2);
+        const h = Math.min(Math.max(BH * 0.2, n.h || BH * 0.24), BH - spacing * 2);
+        if (y + h + spacing > BH) y = spacing;
+        res.push({
+          ...n,
+          x: left + Math.random() * (BW - w - spacing * 2),
+          y,
+          w,
+          h,
+        });
+        y += h + spacing;
       }
-    };
-    r.readAsText(file);
+    }
+    setImages(res);
   };
 
-  // ====== Exporting ======
-  const drawOverlays = (ctx, boardIndex) => {
-    if (!overlayShapes.length) return;
-    ctx.globalAlpha = overlayOpacity;
-    for (const s of overlayShapes) {
-      const bi = Math.floor(s.x / boardW);
-      if (bi !== boardIndex) continue;
-      const lx = s.x - bi * boardW;
-      ctx.save();
-      ctx.fillStyle = s.color || "#fff";
-      ctx.strokeStyle = s.color || "#fff";
-      if (s.type === "bar" || s.type === "rect") ctx.fillRect(lx, s.y, s.w, s.h);
-      else if (s.type === "circle") {
-        ctx.beginPath();
-        ctx.arc(lx + s.w / 2, s.y + s.h / 2, Math.min(s.w, s.h) / 2, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (s.type === "plus" || s.type === "cross") {
-        const thick = Math.max(2, Math.floor(s.w * 0.3));
-        const cx = lx + s.w / 2, cy = s.y + s.h / 2, len = Math.max(s.w, s.h);
-        ctx.fillRect(cx - thick / 2, cy - len / 2, thick, len);
-        ctx.fillRect(cx - len / 2, cy - thick / 2, len, thick);
-        if (s.type === "cross") { // rotate 45deg for cross
-          ctx.translate(cx, cy);
-          ctx.rotate(Math.PI / 4);
-          ctx.translate(-cx, -cy);
-          ctx.fillRect(cx - thick / 2, cy - len / 2, thick, len);
-          ctx.fillRect(cx - len / 2, cy - thick / 2, len, thick);
-        }
-      } else if (s.type === "image" && s.src) {
-        const im = new Image();
-        im.src = s.src;
-        ctx.drawImage(im, lx, s.y, s.w, s.h);
-      }
-      ctx.restore();
-    }
-    ctx.globalAlpha = 1;
+  /** Shuffle Z order helpers */
+  const sendToBack = () => {
+    if (!selected) return;
+    setImages((prev) => {
+      const idx = prev.findIndex((n) => n.id === selected);
+      if (idx < 0) return prev;
+      const copy = [...prev];
+      const [it] = copy.splice(idx, 1);
+      copy.unshift(it);
+      return copy;
+    });
+  };
+  const bringToFront = () => {
+    if (!selected) return;
+    setImages((prev) => {
+      const idx = prev.findIndex((n) => n.id === selected);
+      if (idx < 0) return prev;
+      const copy = [...prev];
+      const [it] = copy.splice(idx, 1);
+      copy.push(it);
+      return copy;
+    });
+  };
+  const bringForward = () => {
+    if (!selected) return;
+    setImages((prev) => {
+      const idx = prev.findIndex((n) => n.id === selected);
+      if (idx < 0 || idx === prev.length - 1) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[idx + 1]] = [copy[idx + 1], copy[idx]];
+      return copy;
+    });
+  };
+  const sendBackward = () => {
+    if (!selected) return;
+    setImages((prev) => {
+      const idx = prev.findIndex((n) => n.id === selected);
+      if (idx <= 0) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[idx - 1]] = [copy[idx - 1], copy[idx]];
+      return copy;
+    });
   };
 
-  const exportBoards = async (mime = "image/png", quality = 0.95) => {
-    if (images.some(n => n.src && !n._imageEl)) {
-      alert("Images are still loading. Try export again in a moment.");
-      return;
-    }
-    for (let i = 0; i < boards; i++) {
-      const canvas = document.createElement("canvas");
-      canvas.width = boardW * exportScale;
-      canvas.height = boardH * exportScale;
-      const ctx = canvas.getContext("2d");
-      // background
-      ctx.fillStyle = bgColor || "#000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // overlays first
-      ctx.save();
-      ctx.scale(exportScale, exportScale);
-      drawOverlays(ctx, i);
-      ctx.restore();
-
-      // images
-      const ops = cropOpsForBoard(images, i, boardW, boardH);
-      for (const op of ops) {
-        if (!op.img) continue;
-        const scaleX = op.img.naturalWidth / (op.placedW || 1);
-        const scaleY = op.img.naturalHeight / (op.placedH || 1);
-        const sdx = op.sx * scaleX;
-        const sdy = op.sy * scaleY;
-        const sdw = op.sw * scaleX;
-        const sdh = op.sh * scaleY;
-
-        ctx.drawImage(
-          op.img,
-          sdx, sdy, sdw, sdh,
-          Math.round(op.dx * exportScale),
-          Math.round(op.dy * exportScale),
-          Math.round(op.dw * exportScale),
-          Math.round(op.dh * exportScale)
-        );
-      }
-
-      const dataURL = canvas.toDataURL(mime, quality);
-      const a = document.createElement("a");
-      a.href = dataURL;
-      a.download = `858 art club_${i + 1}.${mime === "image/jpeg" ? "jpg" : "png"}`;
-      a.click();
-    }
+  /** Reset layout positions but keep images */
+  const resetLayout = () => {
+    setImages((prev) =>
+      prev.map((n, i) => ({
+        ...n,
+        x: (i % boards) * BW + spacing,
+        y: spacing,
+        w: Math.min(Math.max(BW * 0.32, n.w || BW * 0.32), BW - spacing * 2),
+        h: Math.min(Math.max(BH * 0.24, n.h || BH * 0.24), BH - spacing * 2),
+      }))
+    );
   };
 
-  const exportZip = async () => {
-    if (images.some(n => n.src && !n._imageEl)) {
-      alert("Images are still loading. Try export again in a moment.");
-      return;
-    }
-    const zip = new JSZip();
-    for (let i = 0; i < boards; i++) {
-      const canvas = document.createElement("canvas");
-      canvas.width = boardW * exportScale;
-      canvas.height = boardH * exportScale;
-      const ctx = canvas.getContext("2d");
-      ctx.fillStyle = bgColor || "#000";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.save();
-      ctx.scale(exportScale, exportScale);
-      drawOverlays(ctx, i);
-      ctx.restore();
-
-      const ops = cropOpsForBoard(images, i, boardW, boardH);
-      for (const op of ops) {
-        if (!op.img) continue;
-        const scaleX = op.img.naturalWidth / (op.placedW || 1);
-        const scaleY = op.img.naturalHeight / (op.placedH || 1);
-        const sdx = op.sx * scaleX;
-        const sdy = op.sy * scaleY;
-        const sdw = op.sw * scaleX;
-        const sdh = op.sh * scaleY;
-
-        ctx.drawImage(
-          op.img,
-          sdx, sdy, sdw, sdh,
-          Math.round(op.dx * exportScale),
-          Math.round(op.dy * exportScale),
-          Math.round(op.dw * exportScale),
-          Math.round(op.dh * exportScale)
-        );
-      }
-      const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
-      zip.file(`858 art club_${i + 1}.png`, blob);
-    }
-    const zipped = await zip.generateAsync({ type: "blob" });
-    const url = URL.createObjectURL(zipped);
-    const a = document.createElement("a");
-    a.href = url; a.download = "858 art club_export.zip"; a.click();
-  };
-
-  // ====== Keyboard ======
+  /** Keyboard shortcuts */
   useEffect(() => {
-    const onKey = (e) => {
+    const h = (e) => {
       if (e.key.toLowerCase() === "r") randomise();
       if (e.key.toLowerCase() === "p") pack();
-      if ((e.key === "Delete" || e.key === "Backspace") && selectedId) setImages(prev => prev.filter(n => n.id !== selectedId));
+      if ((e.key === "Backspace" || e.key === "Delete") && selected) {
+        setImages((prev) => prev.filter((n) => n.id !== selected));
+        setSelected(null);
+      }
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [randomise, pack, selectedId]);
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, images, boards, BW, BH, spacing]);
 
-  // ====== Image count ======
-  const imageCount = images.length;
+  /** Crop operations per board for export (with coverCrop) */
+  function buildOps(boardIndex) {
+    const boardX = boardIndex * BW;
+    const ops = [];
+    for (const n of images) {
+      const hit = intersect(n.x, n.y, n.w, n.h, boardX, 0, BW, BH);
+      if (!hit) continue;
+      if (!n._natW || !n._natH) continue;
 
-  // ====== UI ======
+      // where this hit falls inside the frame of n
+      const fx = hit.x - n.x;
+      const fy = hit.y - n.y;
+
+      // compute source crop using coverCrop
+      const cover = coverCrop(n._natW, n._natH, n.w, n.h, fx, fy, hit.w, hit.h);
+
+      ops.push({
+        img: n,
+        src: cover,
+        dst: {
+          dx: hit.x - boardX,
+          dy: hit.y,
+          dw: hit.w,
+          dh: hit.h,
+        },
+      });
+    }
+    return ops;
+  }
+
+  /** Export one board to canvas -> dataURL */
+  async function renderBoard(boardIndex, type = "image/png", quality = 0.95, scale = exportScale) {
+    const canvas = document.createElement("canvas");
+    canvas.width = BW * scale;
+    canvas.height = BH * scale;
+    const ctx = canvas.getContext("2d");
+
+    // background
+    ctx.fillStyle = bgColour || "#000";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // draw ops
+    const ops = buildOps(boardIndex);
+    for (const op of ops) {
+      const el = new Image();
+      el.crossOrigin = "anonymous";
+      await new Promise((res) => { el.onload = res; el.src = op.img.src; });
+
+      ctx.drawImage(
+        el,
+        op.src.sx, op.src.sy, op.src.sw, op.src.sh,
+        Math.round(op.dst.dx * scale),
+        Math.round(op.dst.dy * scale),
+        Math.round(op.dst.dw * scale),
+        Math.round(op.dst.dh * scale)
+      );
+    }
+    const ext = type === "image/jpeg" ? "jpg" : "png";
+    const name = `858 art club_${boardIndex + 1}.${ext}`;
+    const dataUrl = canvas.toDataURL(type, quality);
+    return { name, dataUrl };
+  }
+
+  /** Export buttons */
+  const downloadURL = (dataUrl, filename) => {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  const exportPNG = async () => {
+    for (let i = 0; i < boards; i++) {
+      const { name, dataUrl } = await renderBoard(i, "image/png", 0.95);
+      downloadURL(dataUrl, name);
+    }
+  };
+  const exportJPG = async () => {
+    for (let i = 0; i < boards; i++) {
+      const { name, dataUrl } = await renderBoard(i, "image/jpeg", 0.92);
+      downloadURL(dataUrl, name);
+    }
+  };
+  const exportZIP = async () => {
+    const zip = new JSZip();
+    for (let i = 0; i < boards; i++) {
+      const png = await renderBoard(i, "image/png", 0.95);
+      const data = png.dataUrl.split(",")[1];
+      zip.file(png.name, data, { base64: true });
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    downloadURL(url, "858 art club.zip");
+    URL.revokeObjectURL(url);
+  };
+
+  /** Preset sizes */
+  const PRESETS = [
+    { name: "1080 x 1320 (Portrait)", w: 1080, h: 1320 },
+    { name: "1320 x 1080 (Landscape)", w: 1320, h: 1080 },
+    { name: "1080 x 1080 (Square)", w: 1080, h: 1080 },
+    { name: "1440 x 1080 (Widescreen)", w: 1440, h: 1080 },
+  ];
+
+  /** UI */
+  const spreadStyle = {
+    position: "relative",
+    width: SPREAD_W * zoom,
+    height: SPREAD_H * zoom,
+    transform: `scale(${zoom})`,
+    transformOrigin: "top left",
+  };
+
   return (
-    <>
-      <style>{globalStyle}</style>
-
-      {/* PREVIEW */}
+    <div
+      className="app"
+      style={{
+        background: "#000",
+        color: "#d6ffe0",
+        minHeight: "100vh",
+        display: "flex",
+        flexDirection: "column",
+      }}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
+    >
+      {/* Spread */}
       <div
-        className="preview-wrap"
         style={{
-          width: Math.floor(spreadW * previewZoom),
-          height: Math.floor(spreadH * previewZoom),
-          position: "relative",
-          zIndex: 1,
-          marginTop: 14,
+          flex: "1 1 auto",
+          overflow: "auto",
+          padding: 12,
+          borderBottom: "1px solid #0f3",
         }}
+        onClick={(e) => { if (e.currentTarget === e.target) setSelected(null); }}
       >
-        <div
-          style={{
-            position: "absolute",
-            left: 0, top: 0,
-            width: spreadW, height: spreadH,
-            transform: `scale(${previewZoom})`,
-            transformOrigin: "top left",
-            background: bgColor,
-          }}
-        >
-          {/* guides & slide labels */}
-          {showGuides && Array.from({ length: boards }).map((_, i) => (
-            <React.Fragment key={`g${i}`}>
-              <div
-                className="guide"
+        <div style={spreadStyle}>
+          {/* Board guides */}
+          {showGuides &&
+            [...Array(boards)].map((_, i) => (
+              <div key={i}
                 style={{
-                  left: i * boardW,
-                  background: guideColor, opacity: guideOpacity,
+                  position: "absolute",
+                  left: i * BW, top: 0, width: BW, height: BH,
+                  outline: `1px solid ${guideColour}`,
+                  opacity: guideAlpha,
                 }}
-              />
-              <div className="slide-tag" style={{ left: i * boardW + 6, color: guideColor, opacity: Math.min(1, guideOpacity + 0.25) }}>
-                slide {i + 1}
+              >
+                <span style={BOARD_LABEL_STYLE}>slide {i + 1}</span>
               </div>
-            </React.Fragment>
-          ))}
+            ))}
 
-          {/* overlays (preview) */}
-          {overlayShapes.map(s => (
-            <div key={s.id} style={{
-              position: "absolute", left: s.x, top: s.y, width: s.w, height: s.h,
-              background: (s.type === "bar" || s.type === "rect" || s.type === "circle" || s.type === "image") ? s.color : "transparent",
-              opacity: overlayOpacity, pointerEvents: "none",
-              borderRadius: s.type === "circle" ? "9999px" : 0,
-            }}>
-              {(s.type === "plus" || s.type === "cross") && (
-                <div style={{ position: "absolute", inset: 0 }}>
-                  <div style={{
-                    position: "absolute", left: "50%", top: "50%",
-                    width: Math.max(s.w, s.h), height: Math.max(2, Math.floor(s.w * 0.25)),
-                    background: s.color, transform: "translate(-50%, -50%)"
-                  }} />
-                  <div style={{
-                    position: "absolute", left: "50%", top: "50%",
-                    width: Math.max(2, Math.floor(s.w * 0.25)), height: Math.max(s.w, s.h),
-                    background: s.color, transform: "translate(-50%, -50%)"
-                  }} />
-                  {s.type === "cross" && (
-                    <div style={{
-                      position: "absolute", left: "50%", top: "50%", transform: "translate(-50%, -50%) rotate(45deg)"
-                    }}>
-                      <div style={{ width: Math.max(s.w, s.h), height: Math.max(2, Math.floor(s.w * 0.25)), background: s.color }} />
-                      <div style={{ position: "absolute", left: "50%", top: "50%", width: Math.max(2, Math.floor(s.w * 0.25)), height: Math.max(s.w, s.h), background: s.color, transform: "translate(-50%, -50%)" }} />
-                    </div>
-                  )}
-                </div>
-              )}
-              {s.type === "image" && s.src && (
-                <img src={s.src} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", opacity: overlayOpacity }} />
-              )}
-            </div>
-          ))}
-
-          {/* IMAGES */}
-          {images.map(n => (
+          {/* Items */}
+          {images.map((n) => (
             <Item
               key={n.id}
               node={n}
-              selected={n.id === selectedId}
-              onSelect={() => setSelectedId(n.id)}
-              onChange={(next) => setImages(prev => prev.map(x => x.id === n.id ? next : x))}
+              selected={selected === n.id}
+              onSelect={(id) => setSelected(id)}
+              onChange={(next) => setImages((prev) => prev.map((x) => (x.id === n.id ? next : x)))}
             />
           ))}
-
-          {/* Empty tip */}
-          {images.length === 0 && (
-            <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", opacity: 0.6, fontSize: 14, pointerEvents: "none" }}>
-              Drop images or use “Add images”
-            </div>
-          )}
         </div>
       </div>
 
-      {/* DOCK / CONTROLS */}
-      <div className="dock">
-        <div className="dock-inner" style={{ alignItems: "flex-start" }}>
-          {/* Layouts */}
-          <div className="dock-group">
-            <span className="label">Layouts</span>
-            <button className="btn" onClick={() => randomise()}>Randomise</button>
-            <button className="btn" onClick={() => editorial(spacing)}>Editorial (spaced)</button>
-            <button className="btn" onClick={() => editorialSeamless()}>Editorial (seamless)</button>
-            <button className="btn" onClick={() => pack()}>Pack</button>
-            <button className="btn" onClick={fixBounds}>Fix bounds</button>
-            <button className="btn" onClick={resetLayout}>Reset layout</button>
+      {/* Controls */}
+      <div
+        style={{
+          background: "#0b0b0b",
+          borderTop: "1px solid #0f3",
+          padding: "10px 12px",
+          display: "grid",
+          gap: 8,
+          gridTemplateColumns: "repeat(12, minmax(0,1fr))",
+          alignItems: "center",
+          fontSize: 13,
+        }}
+      >
+        {/* Layout group */}
+        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <button onClick={randomise}>Randomise</button>
+          <button onClick={pack}>Pack</button>
+          <button onClick={() => editorial(false)}>Editorial (spaced)</button>
+          <button onClick={() => editorial(true)}>Editorial (seamless)</button>
+          <button onClick={snapBottom}>Snap bottom</button>
+          <button onClick={distributeBoards}>Distribute boards</button>
+          <button onClick={resetLayout}>Reset layout</button>
+          <button onClick={fixBounds}>Fix bounds</button>
+        </div>
+
+        {/* Geometry */}
+        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label>Boards (max {MAX_BOARDS})</label>
+          <input type="number" min={1} max={MAX_BOARDS} value={boards}
+                 onChange={(e) => setBoards(clamp(parseInt(e.target.value||"1",10),1,MAX_BOARDS))} style={{ width: 64 }} />
+
+          <select
+            value={`${BW}x${BH}`}
+            onChange={(e) => {
+              const [w, h] = e.target.value.split("x").map((n) => parseInt(n, 10));
+              setBW(w); setBH(h);
+              fixBounds();
+            }}
+          >
+            {PRESETS.map((p) => (
+              <option key={p.name} value={`${p.w}x${p.h}`}>{p.name}</option>
+            ))}
+          </select>
+
+          <label>W</label>
+          <input type="number" value={BW} onChange={(e)=>setBW(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{ width: 84 }} />
+          <label>H</label>
+          <input type="number" value={BH} onChange={(e)=>setBH(clamp(parseInt(e.target.value||"1",10),200,4000))} style={{ width: 84 }} />
+          <label>Spacing</label>
+          <input type="number" value={spacing} onChange={(e)=>setSpacing(clamp(parseInt(e.target.value||"0",10),0,400))} style={{ width: 64 }} />
+        </div>
+
+        {/* Export */}
+        <div style={{ gridColumn: "span 4", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label>Export scale</label>
+          <input type="number" min={1} max={4} value={exportScale}
+                 onChange={(e)=>setExportScale(clamp(parseInt(e.target.value||"1",10),1,4))}
+                 style={{ width: 64 }} />
+          <label>Background</label>
+          <input type="color" value={bgColour} onChange={(e)=>setBgColour(e.target.value)} />
+          {/* colour favourites */}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {colours.map((c, i) => (
+              <button
+                key={i}
+                title="Click to apply; Alt+Click to remove"
+                onClick={(e) => {
+                  if (e.altKey) {
+                    const copy = [...colours];
+                    copy.splice(i, 1);
+                    setColours(copy);
+                  } else {
+                    setBgColour(c);
+                  }
+                }}
+                style={{
+                  width: 18, height: 18, borderRadius: 4, border: "1px solid #0f3", background: c
+                }}
+              />
+            ))}
+            <button
+              onClick={() => setColours((p) => Array.from(new Set([...p, bgColour])).slice(0, 12))}
+              title="★ Save current as favourite"
+            >★ Save</button>
           </div>
 
-          {/* Boards / size / spacing */}
-          <div className="dock-group">
-            <span className="label">Boards (max 20)</span>
-            <input className="field" type="number" min={1} max={MAX_BOARDS}
-              value={boards} onChange={e => setBoards(clamp(parseInt(e.target.value || "1", 10), 1, MAX_BOARDS))} style={{ width: 64 }} />
-            <select className="field" value={presetKey} onChange={(e) => setPresetKey(e.target.value)}>
-              {BOARD_PRESETS.map(p => <option key={p.key} value={p.key}>{p.key}</option>)}
-            </select>
-            <span className="label">W</span>
-            <input className="field" type="number" value={boardW} onChange={e => setBoardW(clamp(parseInt(e.target.value || "1", 10), 100, 20000))} style={{ width: 80 }} />
-            <span className="label">H</span>
-            <input className="field" type="number" value={boardH} onChange={e => setBoardH(clamp(parseInt(e.target.value || "1", 10), 100, 20000))} style={{ width: 80 }} />
-            <span className="label">Spacing</span>
-            <input className="field" type="number" value={spacing} onChange={e => setSpacing(clamp(parseInt(e.target.value || "0", 10), 0, 400))} style={{ width: 64 }} />
-          </div>
+          <button onClick={exportPNG}>Export PNG</button>
+          <button onClick={exportJPG}>Export JPG</button>
+          <button onClick={exportZIP}>Export ZIP</button>
+        </div>
 
-          {/* Preview & guides */}
-          <div className="dock-group">
-            <span className="label">Preview zoom</span>
-            <input type="range" min="0.1" max="1.0" step="0.01" value={previewZoom} onChange={e => setPreviewZoom(parseFloat(e.target.value))} />
-            <span className="label">Guides colour</span>
-            <input className="field" type="color" value={guideColor} onChange={e => setGuideColor(e.target.value)} />
-            <span className="label">opacity</span>
-            <input type="range" min="0" max="1" step="0.01" value={guideOpacity} onChange={e => setGuideOpacity(parseFloat(e.target.value))} />
-            <label className="label"><input type="checkbox" checked={showGuides} onChange={e => setShowGuides(e.target.checked)} /> Show guides</label>
-            <span className="chip">Count: {imageCount}</span>
-          </div>
+        {/* Z / Files row 2 */}
+        <div style={{ gridColumn: "span 12", display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+          <label>Preview zoom</label>
+          <input type="range" min={0.2} max={2.0} step={0.05} value={zoom}
+                 onChange={(e)=>setZoom(parseFloat(e.target.value))} />
+          <label style={{ marginLeft: 12 }}>Guides colour</label>
+          <input type="color" value={guideColour} onChange={(e)=>setGuideColour(e.target.value)} />
+          <label>Guides opacity</label>
+          <input type="range" min={0} max={1} step={0.05} value={guideAlpha}
+                 onChange={(e)=>setGuideAlpha(parseFloat(e.target.value))} />
+          <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <input type="checkbox" checked={showGuides} onChange={(e)=>setShowGuides(e.target.checked)} />
+            Show guides
+          </label>
 
-          {/* Background & Export */}
-          <div className="dock-group">
-            <span className="label">Background</span>
-            <input className="field" type="color" value={bgColor} onChange={e => setBgColor(e.target.value)} />
-            <span className="label">Export scale</span>
-            <input className="field" type="number" min={1} max={4} value={exportScale} onChange={e => setExportScale(clamp(parseInt(e.target.value || "1", 10), 1, 4))} style={{ width: 56 }} />
-            <button className="btn" onClick={() => exportBoards("image/png")}>Export PNG</button>
-            <button className="btn" onClick={() => exportBoards("image/jpeg")}>Export JPG</button>
-            <button className="btn" onClick={exportZip}>Export ZIP</button>
-          </div>
+          <span style={{ marginLeft: "auto", opacity: 0.8 }}>
+            Count: <strong>{images.length}</strong>
+          </span>
 
-          {/* Overlays */}
-          <div className="dock-group">
-            <span className="label">Overlay</span>
-            <button className="btn" onClick={regenBars}>Bars</button>
-            <button className="btn" onClick={regenRects}>Rects</button>
-            <button className="btn" onClick={regenCircles}>Circles</button>
-            <button className="btn" onClick={regenPlus}>Plus</button>
-            <button className="btn" onClick={regenCross}>Cross</button>
-            <button className="btn" onClick={hideOverlay}>Hide Overlay</button>
-            <span className="label">Opacity</span>
-            <input type="range" min="0" max="1" step="0.01" value={overlayOpacity} onChange={e => setOverlayOpacity(parseFloat(e.target.value))} />
-            <span className="label">Colour A</span>
-            <input className="field" type="color" value={overlayA} onChange={e => setOverlayA(e.target.value)} />
-            <button className="btn" onClick={saveSlotA}>★ save A</button>
-            <span className="label">Colour B</span>
-            <input className="field" type="color" value={overlayB} onChange={e => setOverlayB(e.target.value)} />
-            <button className="btn" onClick={saveSlotB}>★ save B</button>
-            {/* favourite slots */}
-            {slotsA.map((c, i) => <button key={`sa${i}`} className="btn" style={{ background:c, borderColor:"#333" }} onClick={() => setOverlayA(c)} title={`slot A ${i+1}`} />)}
-            {slotsB.map((c, i) => <button key={`sb${i}`} className="btn" style={{ background:c, borderColor:"#333" }} onClick={() => setOverlayB(c)} title={`slot B ${i+1}`} />)}
-            {/* upload overlay */}
-            <input ref={overlayImageRef} type="file" accept="image/*,.svg" style={{ display:"none" }} onChange={(e) => e.target.files && onUploadOverlay(e.target.files[0])} />
-            <button className="btn" onClick={() => overlayImageRef.current?.click()}>Upload overlay image/SVG</button>
-          </div>
+          <button onClick={sendToBack}>Send to Back</button>
+          <button onClick={sendBackward}>Send Backward</button>
+          <button onClick={bringForward}>Bring Forward</button>
+          <button onClick={bringToFront}>Bring to Front</button>
 
-          {/* Presets + Z order + Files */}
-          <div className="dock-group">
-            <button className="btn" onClick={savePreset}>Save preset</button>
-            <label className="btn">
-              Load preset file
-              <input type="file" accept="application/json" style={{ display:"none" }} onChange={(e) => e.target.files && loadPreset(e.target.files[0])} />
-            </label>
-            <button className="btn" onClick={() => setImages(prev => {
-              if (!selectedId) return prev;
-              const idx = prev.findIndex(n => n.id === selectedId);
-              if (idx < 0) return prev;
-              const arr = [...prev];
-              if (idx > 0) [arr[idx-1], arr[idx]] = [arr[idx], arr[idx-1]];
-              return arr;
-            })}>Send Backward</button>
-            <button className="btn" onClick={() => setImages(prev => {
-              if (!selectedId) return prev;
-              const idx = prev.findIndex(n => n.id === selectedId);
-              if (idx < 0) return prev;
-              const arr = [...prev];
-              if (idx < arr.length - 1) [arr[idx+1], arr[idx]] = [arr[idx], arr[idx+1]];
-              return arr;
-            })}>Bring Forward</button>
-            <button className="btn" onClick={() => setImages(prev => {
-              if (!selectedId) return prev;
-              const idx = prev.findIndex(n => n.id === selectedId);
-              if (idx < 0) return prev;
-              const arr = [...prev];
-              const [it] = arr.splice(idx, 1);
-              arr.unshift(it);
-              return arr;
-            })}>Send to Back</button>
-            <button className="btn" onClick={() => setImages(prev => {
-              if (!selectedId) return prev;
-              const idx = prev.findIndex(n => n.id === selectedId);
-              if (idx < 0) return prev;
-              const arr = [...prev];
-              const [it] = arr.splice(idx, 1);
-              arr.push(it);
-              return arr;
-            })}>Bring to Front</button>
-
-            {/* Add images */}
-            <label className="btn">
-              Add images
-              <input type="file" accept="image/*" multiple style={{ display:"none" }} onChange={(e) => e.target.files && onAddImages(e.target.files)} />
-            </label>
-            <span className="chip mini">Tip: R randomise, P pack, Delete removes selected. Files export as “858 art club_x”.</span>
-          </div>
+          <label className="file-btn" style={{ marginLeft: 12 }}>
+            Add images
+            <input type="file" multiple accept="image/*"
+                   onChange={(e)=> e.target.files && addFiles(e.target.files)}
+                   style={{ display: "none" }} />
+          </label>
         </div>
       </div>
-    </>
+
+      {/* tiny style reset for buttons/inputs in dark UI */}
+      <style>{`
+        .app button {
+          background:#0e0e0e;border:1px solid #1aff7a;color:#d6ffe0;
+          padding:6px 10px;border-radius:8px;cursor:pointer
+        }
+        .app button:hover{background:#122;box-shadow:0 0 0 1px #1aff7a inset}
+        .app input, .app select {
+          background:#060606;border:1px solid #1aff7a;color:#d6ffe0;border-radius:6px;
+          padding:6px 8px; outline:none
+        }
+        .file-btn{position:relative; overflow:hidden}
+        .file-btn input{position:absolute; inset:0; opacity:0; cursor:pointer}
+      `}</style>
+    </div>
   );
 }
